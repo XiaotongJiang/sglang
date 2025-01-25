@@ -133,6 +133,24 @@ class TritonAttnBackend(AttentionBackend):
             )
 
         _, max_extend_len = self.forward_metadata
+
+        custom_mask = None
+        if forward_batch.forward_mode.is_decode():
+            max_extend_len = forward_batch.input_ids.shape[0]
+            forward_batch.extend_seq_lens = torch.tensor(forward_batch.input_ids.shape, device='cuda:0')
+            forward_batch.extend_start_loc = forward_batch.seq_lens + ((forward_batch.spec_info.iter - 1) * forward_batch.spec_info.topk)
+            forward_batch.seq_lens = forward_batch.seq_lens + forward_batch.spec_info.iter * forward_batch.spec_info.topk
+            
+            if hasattr(forward_batch.spec_info, 'custom_mask') and forward_batch.spec_info.custom_mask is not None:
+                custom_mask = forward_batch.spec_info.custom_mask[forward_batch.seq_lens:, forward_batch.seq_lens:]
+                # custom_mask[:, :] = 0
+                custom_mask = custom_mask != 0  # e.g. shape [stride_cm, stride_cm]
+                            
+            if hasattr(forward_batch.spec_info, 'tree_mask') and forward_batch.spec_info.tree_mask is not None:
+                custom_mask = forward_batch.spec_info.tree_mask
+                # custom_mask[:, :] = 0
+                custom_mask = custom_mask != 0  # e.g. shape [stride_cm, stride_cm]
+            
         self.extend_attention_fwd(
             q.view(-1, layer.tp_q_head_num, layer.qk_head_dim),
             k.contiguous(),
@@ -148,7 +166,18 @@ class TritonAttnBackend(AttentionBackend):
             max_extend_len,
             layer.scaling,
             layer.logit_cap,
+            custom_mask
         )
+        # print("============Input parameters for extend_attention_fwd:")
+        # print(f"input_ids: {forward_batch.input_ids}")
+        # print(f"positoons: {forward_batch.positions}")
+        # print(f"mode: {forward_batch.forward_mode}")
+        # print(f"forward_batch.seq_lens: {forward_batch.seq_lens.shape}")
+        # print(f"forward_batch.extend_seq_lens: {forward_batch.extend_seq_lens.shape}")
+        # print(f"forward_batch.extend_start_loc: {forward_batch.extend_start_loc.shape}")
+        # print(f"max_extend_len: {max_extend_len}")
+        # if torch.isnan(o).any():
+        #     print("o contains NaN")
         return o
 
     def forward_decode(
@@ -160,6 +189,8 @@ class TritonAttnBackend(AttentionBackend):
         forward_batch: ForwardBatch,
         save_kv_cache=True,
     ):
+        if forward_batch.spec_info is not None:
+            return self.forward_extend(q, k, v, layer, forward_batch, save_kv_cache)
         # During torch.compile, there is a bug in rotary_emb that causes the
         # output value to have a 3D tensor shape. This reshapes the output correctly.
         q = q.reshape(-1, layer.tp_q_head_num * layer.qk_head_dim)

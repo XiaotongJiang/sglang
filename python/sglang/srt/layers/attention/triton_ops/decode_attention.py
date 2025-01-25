@@ -141,6 +141,22 @@ def _fwd_kernel_stage1(
 
             e_sum = e_sum * re_scale + tl.sum(p, 0)
             e_max = n_e_max
+            if cur_batch == 0:
+                print(f"cur_batch: {cur_batch}")
+                print(f"cur_head: {cur_head}")
+                print(f"split_kv_id: {split_kv_id}")
+                print(f"cur_kv_head: {cur_kv_head}")
+                print(f"offs_d: {offs_d}")
+                print(f"offs_dv: {offs_dv}")
+                print(f"mask_d: {mask_d}")
+                print(f"mask_dv: {mask_dv}")
+                print(f"cur_batch_seq_len: {cur_batch_seq_len}")
+                print(f"cur_batch_req_idx: {cur_batch_req_idx}")
+                print(f"split_kv_start: {split_kv_start}")
+                print(f"split_kv_end: {split_kv_end}")
+                print(f"e_max: {e_max}")
+                print(f"e_sum: {e_sum}")
+                print(f"acc: {acc}")
 
         offs_mid_o = (
             cur_batch * stride_mid_ob
@@ -148,6 +164,9 @@ def _fwd_kernel_stage1(
             + split_kv_id * stride_mid_os
             + offs_dv
         )
+
+        if cur_batch == 0:
+            print(f"off_q {off_q}")
 
         tl.store(
             Att_Out + offs_mid_o,

@@ -237,7 +237,7 @@ class ModelRunner:
         set_custom_all_reduce(not self.server_args.disable_custom_all_reduce)
 
         if not self.is_draft_worker:
-            # Only initialize the distributed environment on the target model worker.
+            # Only initilzie the distributed environment on the target model worker.
             init_distributed_environment(
                 backend=backend,
                 world_size=self.tp_size,
@@ -768,6 +768,10 @@ class ModelRunner:
         )
 
     def forward(self, forward_batch: ForwardBatch) -> LogitsProcessorOutput:
+        print("=========")
+        print(forward_batch.forward_mode)
+        print(forward_batch.input_ids)
+        print(forward_batch.positions)
         if (
             forward_batch.forward_mode.is_cuda_graph()
             and self.cuda_graph_runner

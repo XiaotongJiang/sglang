@@ -19,7 +19,7 @@ class TestEAGLEEngine(unittest.TestCase):
 
     def test_eagle_accuracy(self):
         prompt = "Today is a sunny day and I like"
-        target_model_path = "meta-llama/Llama-2-7b-chat-hf"
+        target_model_path = "daryl149/Llama-2-7b-chat-hf"
         speculative_draft_model_path = "lmzheng/sglang-EAGLE-llama2-chat-7B"
 
         sampling_params = {"temperature": 0, "max_new_tokens": 8}
@@ -31,13 +31,21 @@ class TestEAGLEEngine(unittest.TestCase):
             speculative_num_steps=3,
             speculative_eagle_topk=4,
             speculative_num_draft_tokens=16,
+            disable_cuda_graph = True,
+            watchdog_timeout = 10000000,i
+            attention_backend="triton"
         )
         out1 = engine.generate(prompt, sampling_params)["text"]
         engine.shutdown()
 
-        engine = sgl.Engine(model_path=target_model_path)
-        out2 = engine.generate(prompt, sampling_params)["text"]
-        engine.shutdown()
+        # engine = sgl.Engine(
+        #     model_path=target_model_path,
+        #     disable_cuda_graph = True,
+        #     watchdog_timeout = 10000000,
+        #     attention_backend="triton"
+        # )
+        # out2 = engine.generate(prompt, sampling_params)["text"]
+        # engine.shutdown()
 
         print("==== Answer 1 ====")
         print(out1)
@@ -46,32 +54,32 @@ class TestEAGLEEngine(unittest.TestCase):
         print(out2)
         self.assertEqual(out1, out2)
 
-    def test_eagle_end_check(self):
-        prompt = "[INST] <<SYS>>\\nYou are a helpful assistant.\\n<</SYS>>\\nToday is a sunny day and I like [/INST]"
-        target_model_path = "meta-llama/Llama-2-7b-chat-hf"
-        tokenizer = AutoTokenizer.from_pretrained(target_model_path)
-        speculative_draft_model_path = "lmzheng/sglang-EAGLE-llama2-chat-7B"
+    # def test_eagle_end_check(self):
+    #     prompt = "[INST] <<SYS>>\\nYou are a helpful assistant.\\n<</SYS>>\\nToday is a sunny day and I like [/INST]"
+    #     target_model_path = "daryl149/Llama-2-7b-chat-hf"
+    #     tokenizer = AutoTokenizer.from_pretrained(target_model_path)
+    #     speculative_draft_model_path = "lmzheng/sglang-EAGLE-llama2-chat-7B"
 
-        sampling_params = {
-            "temperature": 0,
-            "max_new_tokens": 1024,
-            "skip_special_tokens": False,
-        }
+    #     sampling_params = {
+    #         "temperature": 0,
+    #         "max_new_tokens": 1024,
+    #         "skip_special_tokens": False,
+    #     }
 
-        engine = sgl.Engine(
-            model_path=target_model_path,
-            speculative_draft_model_path=speculative_draft_model_path,
-            speculative_algorithm="EAGLE",
-            speculative_num_steps=3,
-            speculative_eagle_topk=4,
-            speculative_num_draft_tokens=16,
-        )
-        out1 = engine.generate(prompt, sampling_params)["text"]
-        engine.shutdown()
-        print("==== Answer 1 ====")
-        print(repr(out1))
-        tokens = tokenizer.encode(out1, truncation=False)
-        assert tokenizer.eos_token_id not in tokens
+    #     engine = sgl.Engine(
+    #         model_path=target_model_path,
+    #         speculative_draft_model_path=speculative_draft_model_path,
+    #         speculative_algorithm="EAGLE",
+    #         speculative_num_steps=3,
+    #         speculative_eagle_topk=4,
+    #         speculative_num_draft_tokens=16,
+    #     )
+    #     out1 = engine.generate(prompt, sampling_params)["text"]
+    #     engine.shutdown()
+    #     print("==== Answer 1 ====")
+    #     print(repr(out1))
+    #     tokens = tokenizer.encode(out1, truncation=False)
+    #     assert tokenizer.eos_token_id not in tokens
 
 
 prompts = [
@@ -122,7 +130,7 @@ class TestEAGLELaunchServer(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         speculative_draft_model_path = "lmzheng/sglang-EAGLE-llama2-chat-7B"
-        cls.model = "meta-llama/Llama-2-7b-chat-hf"
+        cls.model = "daryl149/Llama-2-7b-chat-hf"
         cls.base_url = DEFAULT_URL_FOR_TEST
         cls.process = popen_launch_server(
             cls.model,

@@ -607,6 +607,18 @@ class FlashInferIndicesUpdaterDecode:
                 paged_kernel_lens,
                 self.req_to_token,
             )
+            # Print input values
+            print("generate_attn_arg_decode inputs:")
+            print("req_pool_indices:", req_pool_indices)
+            print("paged_kernel_lens:", paged_kernel_lens) 
+            print("req_to_token:", self.req_to_token)
+
+            # Print output values
+            print("generate_attn_arg_decode outputs:")
+            print("bs:", bs)
+            print("kv_indices:", kv_indices)
+            print("kv_indptr:", kv_indptr)
+
 
         wrapper.end_forward()
         wrapper.begin_forward(

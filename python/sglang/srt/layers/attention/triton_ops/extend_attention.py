@@ -37,7 +37,6 @@ def tanh(x):
     # Tanh is just a scaled sigmoid
     return 2 * tl.sigmoid(2 * x) - 1
 
-
 @triton.jit
 def _fwd_kernel(
     Q_Extend,
@@ -74,6 +73,8 @@ def _fwd_kernel(
     BLOCK_DV: tl.constexpr,
     BLOCK_M: tl.constexpr,
     BLOCK_N: tl.constexpr,
+    custom_mask,
+    debug_data_buffer,
 ):
     cur_seq = tl.program_id(0)
     cur_head = tl.program_id(1)
@@ -95,6 +96,14 @@ def _fwd_kernel(
 
     mask_d = offs_d < Lq
     mask_dv = offs_dv < Lv
+
+    if custom_mask is not None:
+        mask_causual_f32 = mask_causual.to(tl.float32)
+        mask_causual_1d = tl.reshape(mask_causual_f32, [BLOCK_M * BLOCK_N])
+        
+        off_mask_1d = tl.arange(0, BLOCK_M * BLOCK_N)
+        custom_mask_val_1d = tl.load(custom_mask + off_mask_1d)
+        custom_mask_val = tl.reshape(custom_mask_val_1d, [BLOCK_M, BLOCK_N])
 
     offs_q = (
         (cur_seq_extend_start_contiguous + cur_block_m * BLOCK_M + offs_m[:, None])
@@ -159,7 +168,7 @@ def _fwd_kernel(
         if logit_cap > 0:
             qk = logit_cap * tanh(qk / logit_cap)
 
-        qk = tl.where(mask_m[:, None] & mask_n[None, :], qk, float("-inf"))
+        qk = tl.where(mask_m[:, None] & mask_n[None, :] & custom_mask_val, qk, float("-inf"))
 
         n_e_max = tl.maximum(tl.max(qk, 1), e_max)
         re_scale = tl.exp(e_max - n_e_max)
@@ -220,7 +229,27 @@ def _fwd_kernel(
             start_n + offs_n[None, :]
         )
         mask_causual &= mask_m[:, None] & mask_n[None, :]
-        qk = tl.where(mask_causual, qk, float("-inf"))
+
+       # ------------------------------------------------
+        #   Apply the custom attention mask (extend part)
+        # ------------------------------------------------
+        if custom_mask is not None:
+            mask_causual_f32 = mask_causual.to(tl.float32)
+            mask_causual_1d = tl.reshape(mask_causual_f32, [BLOCK_M * BLOCK_N])
+            
+            off_mask_1d = tl.arange(0, BLOCK_M * BLOCK_N)
+            custom_mask_val_1d = tl.load(custom_mask + off_mask_1d)
+            custom_mask_val = tl.reshape(custom_mask_val_1d, [BLOCK_M, BLOCK_N])
+            mask_att = mask_causual & custom_mask_val
+        else:
+            mask_att = mask_causual
+        offs = tl.arange(0, BLOCK_M * BLOCK_N)
+        tl.store(
+            debug_data_buffer + offs,   # pointer plus offset
+            tl.reshape(mask_att, [BLOCK_M * BLOCK_N]),
+            mask=offs < (BLOCK_M * BLOCK_N),  # optional boundary mask
+        )
+        qk = tl.where(mask_att, qk, float("-inf"))
 
         n_e_max = tl.maximum(tl.max(qk, 1), e_max)
         re_scale = tl.exp(e_max - n_e_max)
@@ -266,6 +295,7 @@ def extend_attention_fwd(
     max_len_extend,
     sm_scale=None,
     logit_cap=0.0,
+    custom_mask=None,
 ):
     """
     q_extend, k_extend, v_extend, o_extend: contiguous tensors
@@ -325,6 +355,14 @@ def extend_attention_fwd(
     if is_hip_:
         extra_kargs = {"waves_per_eu": 4, "matrix_instr_nonkdim": 16, "kpack": 2}
 
+    debug_data_buffer = torch.empty((BLOCK_M, BLOCK_N), dtype=torch.float32, device="cuda")
+
+    import math
+    padded_custom_mask = torch.zeros((BLOCK_M, BLOCK_N), dtype=custom_mask.dtype, device=custom_mask.device)  if custom_mask is not None else None
+    if custom_mask is not None:
+        padded_custom_mask[:custom_mask.shape[0], :custom_mask.shape[1]] = custom_mask
+        print("padded_custom_mask")
+        print(padded_custom_mask[:4, :4])
     _fwd_kernel[grid](
         q_extend,
         k_extend,
@@ -360,10 +398,16 @@ def extend_attention_fwd(
         BLOCK_N=BLOCK_N,
         Lq=Lq,
         Lv=Lv,
+        custom_mask=padded_custom_mask if custom_mask is not None else None,
         num_warps=num_warps,
         num_stages=num_stages,
+        debug_data_buffer=debug_data_buffer,
         **extra_kargs,
     )
+    print("debug_data_buffer")
+    print(debug_data_buffer[:4, :4])
+    print("o_extend")
+    print(o_extend[:4, :4])
 
 
 def redundant_attention(

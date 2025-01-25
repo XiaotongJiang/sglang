@@ -196,6 +196,7 @@ class EAGLEDraftInput(SpecInfo):
         self.accept_length: torch.Tensor = None
         self.has_finished: bool = False
         self.unfinished_index: List[int] = None
+        self.custom_mask: torch.Tensor = None
 
     def load_server_args(self, server_args: ServerArgs):
         self.topk: int = server_args.speculative_eagle_topk
@@ -266,6 +267,12 @@ class EAGLEDraftInput(SpecInfo):
             self.parents_list.append(
                 topk_cs_index + (self.topk**2 * (self.iter - 1) + self.topk)
             )  # shape: (b, topk)
+            if self.iter >= 2:
+                mask_q = batch.seq_lens + (self.iter - 1)*self.topk + torch.arange(0, self.topk, device="cuda:0")
+                mask_k = batch.seq_lens + (self.iter - 2)*self.topk + selected_input_index
+                # from remote_pdb import RemotePdb
+                # RemotePdb('127.0.0.1', 7728).set_trace()
+                self.custom_mask[mask_q, mask_k] = 1
         else:
             # ForwardMode.EXTEND or ForwardMode.DRAFT_EXTEND
             batch.spec_info.hidden_states = (
@@ -284,6 +291,9 @@ class EAGLEDraftInput(SpecInfo):
                 .unsqueeze(0)
                 .repeat(self.scores.shape[0], 1)
             )  # shape: (b, topk + 1)
+            self.custom_mask = torch.zeros((batch.seq_lens + self.topk * self.spec_steps, batch.seq_lens + self.topk * self.spec_steps), device="cuda")
+            self.custom_mask[:, :batch.seq_lens] = 1
+            self.custom_mask.fill_diagonal_(1)
         self.cache_list.append(batch.out_cache_loc)
         self.positions = (
             batch.seq_lens[:, None]
