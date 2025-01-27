@@ -37,6 +37,7 @@ def tanh(x):
     # Tanh is just a scaled sigmoid
     return 2 * tl.sigmoid(2 * x) - 1
 
+
 @triton.jit
 def _fwd_kernel(
     Q_Extend,
@@ -92,15 +93,12 @@ def _fwd_kernel(
     offs_d = tl.arange(0, BLOCK_DMODEL)
     offs_dv = tl.arange(0, BLOCK_DV)
     offs_m = tl.arange(0, BLOCK_M)
-    mask_m = (cur_block_m * BLOCK_M + offs_m) < cur_seq_len_extend
+    mask_m = (cur_block_m * BLOCK_M + offs_m) < (cur_seq_len_extend * 32)
 
     mask_d = offs_d < Lq
     mask_dv = offs_dv < Lv
 
     if custom_mask is not None:
-        mask_causual_f32 = mask_causual.to(tl.float32)
-        mask_causual_1d = tl.reshape(mask_causual_f32, [BLOCK_M * BLOCK_N])
-        
         off_mask_1d = tl.arange(0, BLOCK_M * BLOCK_N)
         custom_mask_val_1d = tl.load(custom_mask + off_mask_1d)
         custom_mask_val = tl.reshape(custom_mask_val_1d, [BLOCK_M, BLOCK_N])
@@ -168,11 +166,31 @@ def _fwd_kernel(
         if logit_cap > 0:
             qk = logit_cap * tanh(qk / logit_cap)
 
-        qk = tl.where(mask_m[:, None] & mask_n[None, :] & custom_mask_val, qk, float("-inf"))
+        if custom_mask is not None:
+            qk = tl.where(
+                mask_m[:, None] & mask_n[None, :] & custom_mask_val, qk, float("-inf")
+            )
+        else:
+            qk = tl.where(mask_m[:, None] & mask_n[None, :], qk, float("-inf"))
 
         n_e_max = tl.maximum(tl.max(qk, 1), e_max)
         re_scale = tl.exp(e_max - n_e_max)
-        p = tl.exp(qk - n_e_max[:, None])
+        # if custom_mask is not None:
+        #     re_scale = tl.exp(tl.where(mask_m[:, None] & mask_n[None, :] & custom_mask_val, e_max - n_e_max, 0.0))
+        # else:
+        #     re_scale = tl.exp(e_max - n_e_max)
+
+        if custom_mask is not None:
+            p = tl.exp(
+                tl.where(
+                    mask_m[:, None] & mask_n[None, :] & custom_mask_val,
+                    (qk - n_e_max[:, None]),
+                    float("-inf"),
+                )
+            )
+        else:
+            p = tl.exp(qk - n_e_max[:, None])
+
         deno = deno * re_scale + tl.sum(p, 1)
 
         offs_buf_v = (
@@ -185,6 +203,13 @@ def _fwd_kernel(
         )
         p = p.to(v.dtype)
         acc = acc * re_scale[:, None] + tl.dot(p, v)
+
+        offs = tl.arange(0, (BLOCK_M * BLOCK_N))
+        tl.store(
+            debug_data_buffer + offs,  # pointer plus offset
+            tl.reshape((mask_m[:, None]) & (mask_d[None, :]), [BLOCK_M * BLOCK_N]),
+            mask=offs < (BLOCK_M * BLOCK_N),  # optional boundary mask
+        )
 
         e_max = n_e_max
 
@@ -225,31 +250,16 @@ def _fwd_kernel(
         if logit_cap > 0:
             qk = logit_cap * tanh(qk / logit_cap)
 
-        mask_causual = (cur_block_m * BLOCK_M + offs_m[:, None]) >= (
-            start_n + offs_n[None, :]
-        )
-        mask_causual &= mask_m[:, None] & mask_n[None, :]
-
-       # ------------------------------------------------
-        #   Apply the custom attention mask (extend part)
-        # ------------------------------------------------
         if custom_mask is not None:
-            mask_causual_f32 = mask_causual.to(tl.float32)
-            mask_causual_1d = tl.reshape(mask_causual_f32, [BLOCK_M * BLOCK_N])
-            
-            off_mask_1d = tl.arange(0, BLOCK_M * BLOCK_N)
-            custom_mask_val_1d = tl.load(custom_mask + off_mask_1d)
-            custom_mask_val = tl.reshape(custom_mask_val_1d, [BLOCK_M, BLOCK_N])
-            mask_att = mask_causual & custom_mask_val
+            mask_causual = (cur_block_m * BLOCK_M + offs_m[:, None]) == (
+                start_n + offs_n[None, :]
+            )
         else:
-            mask_att = mask_causual
-        offs = tl.arange(0, BLOCK_M * BLOCK_N)
-        tl.store(
-            debug_data_buffer + offs,   # pointer plus offset
-            tl.reshape(mask_att, [BLOCK_M * BLOCK_N]),
-            mask=offs < (BLOCK_M * BLOCK_N),  # optional boundary mask
-        )
-        qk = tl.where(mask_att, qk, float("-inf"))
+            mask_causual = (cur_block_m * BLOCK_M + offs_m[:, None]) >= (
+                start_n + offs_n[None, :]
+            )
+        mask_causual &= mask_m[:, None] & mask_n[None, :]
+        qk = tl.where(mask_causual, qk, float("-inf"))
 
         n_e_max = tl.maximum(tl.max(qk, 1), e_max)
         re_scale = tl.exp(e_max - n_e_max)
@@ -355,14 +365,89 @@ def extend_attention_fwd(
     if is_hip_:
         extra_kargs = {"waves_per_eu": 4, "matrix_instr_nonkdim": 16, "kpack": 2}
 
-    debug_data_buffer = torch.empty((BLOCK_M, BLOCK_N), dtype=torch.float32, device="cuda")
+    debug_data_buffer = torch.empty(
+        (BLOCK_M, BLOCK_N), dtype=torch.float32, device="cuda"
+    )
 
     import math
-    padded_custom_mask = torch.zeros((BLOCK_M, BLOCK_N), dtype=custom_mask.dtype, device=custom_mask.device)  if custom_mask is not None else None
+
+    padded_custom_mask = (
+        torch.zeros(
+            (BLOCK_M, BLOCK_N), dtype=custom_mask.dtype, device=custom_mask.device
+        )
+        if custom_mask is not None
+        else None
+    )
     if custom_mask is not None:
-        padded_custom_mask[:custom_mask.shape[0], :custom_mask.shape[1]] = custom_mask
-        print("padded_custom_mask")
-        print(padded_custom_mask[:4, :4])
+        padded_custom_mask[: custom_mask.shape[0], : custom_mask.shape[1]] = custom_mask
+        print("custom_mask")
+        print(custom_mask[:25, :25])
+        print("q_extend")
+        if torch.isnan(q_extend).any():
+            print("debug_data_buffer contains NaN")
+        else:
+            print("No NaN in debug_data_buffer")
+        print(q_extend[0, 0, :BLOCK_M])
+
+    print("fwd_kernel inputs:")
+    print("q_extend: ", q_extend, "shape:", q_extend.shape)
+    print("k_extend: ", k_extend, "shape:", k_extend.shape)
+    print("v_extend: ", v_extend, "shape:", v_extend.shape)
+    print("o_extend: ", o_extend, "shape:", o_extend.shape)
+    print("k_buffer: ", k_buffer, "shape:", k_buffer.shape)
+    print("v_buffer: ", v_buffer, "shape:", v_buffer.shape)
+    print("req_to_tokens: ", req_to_tokens, "shape:", req_to_tokens.shape)
+    print("b_req_idx: ", b_req_idx, "shape:", b_req_idx.shape)
+    print("b_seq_len: ", b_seq_len, "shape:", b_seq_len.shape)
+    print(
+        "b_start_loc_extend: ", b_start_loc_extend, "shape:", b_start_loc_extend.shape
+    )
+    print("b_seq_len_extend: ", b_seq_len_extend, "shape:", b_seq_len_extend.shape)
+    print("sm_scale: ", sm_scale)
+    print("kv_group_num: ", kv_group_num)
+    print(
+        "q_extend.shape[1] * q_extend.shape[2]: ", q_extend.shape[1] * q_extend.shape[2]
+    )
+    print("q_extend.shape[2]: ", q_extend.shape[2])
+    print(
+        "k_extend.shape[1] * k_extend.shape[2]: ", k_extend.shape[1] * k_extend.shape[2]
+    )
+    print("k_extend.shape[2]: ", k_extend.shape[2])
+    print(
+        "v_extend.shape[1] * v_extend.shape[2]: ", v_extend.shape[1] * v_extend.shape[2]
+    )
+    print("v_extend.shape[2]: ", v_extend.shape[2])
+    print(
+        "o_extend.shape[1] * o_extend.shape[2]: ", o_extend.shape[1] * o_extend.shape[2]
+    )
+    print("o_extend.shape[2]: ", o_extend.shape[2])
+    print(
+        "k_buffer.shape[1] * k_buffer.shape[2]: ", k_buffer.shape[1] * k_buffer.shape[2]
+    )
+    print("k_buffer.shape[2]: ", k_buffer.shape[2])
+    print(
+        "v_buffer.shape[1] * v_buffer.shape[2]: ", v_buffer.shape[1] * v_buffer.shape[2]
+    )
+    print("v_buffer.shape[2]: ", v_buffer.shape[2])
+    print("req_to_tokens.stride(0): ", req_to_tokens.stride(0))
+    print("logit_cap: ", logit_cap)
+    print("BLOCK_DMODEL: ", BLOCK_DMODEL)
+    print("BLOCK_DPE: ", BLOCK_DPE)
+    print("BLOCK_DV: ", BLOCK_DV)
+    print("BLOCK_M: ", BLOCK_M)
+    print("BLOCK_N: ", BLOCK_N)
+    print("Lq: ", Lq)
+    print("Lv: ", Lv)
+    print(
+        "custom_mask: ",
+        padded_custom_mask if custom_mask is not None else None,
+        "shape:",
+        padded_custom_mask.shape if custom_mask is not None else None,
+    )
+    print("num_warps: ", num_warps)
+    print("num_stages: ", num_stages)
+    print("debug_data_buffer: ", debug_data_buffer, "shape:", debug_data_buffer.shape)
+    print("extra_kargs: ", extra_kargs)
     _fwd_kernel[grid](
         q_extend,
         k_extend,
@@ -377,18 +462,18 @@ def extend_attention_fwd(
         b_seq_len_extend,
         sm_scale,
         kv_group_num,
-        q_extend.stride(0),
-        q_extend.stride(1),
-        k_extend.stride(0),
-        k_extend.stride(1),
-        v_extend.stride(0),
-        v_extend.stride(1),
-        o_extend.stride(0),
-        o_extend.stride(1),
-        k_buffer.stride(0),
-        k_buffer.stride(1),
-        v_buffer.stride(0),
-        v_buffer.stride(1),
+        q_extend.shape[1] * q_extend.shape[2],
+        q_extend.shape[2],
+        k_extend.shape[1] * k_extend.shape[2],
+        k_extend.shape[2],
+        v_extend.shape[1] * v_extend.shape[2],
+        v_extend.shape[2],
+        o_extend.shape[1] * o_extend.shape[2],
+        o_extend.shape[2],
+        k_buffer.shape[1] * k_buffer.shape[2],
+        k_buffer.shape[2],
+        v_buffer.shape[1] * v_buffer.shape[2],
+        v_buffer.shape[2],
         req_to_tokens.stride(0),
         logit_cap=logit_cap,
         BLOCK_DMODEL=BLOCK_DMODEL,
@@ -405,7 +490,11 @@ def extend_attention_fwd(
         **extra_kargs,
     )
     print("debug_data_buffer")
-    print(debug_data_buffer[:4, :4])
+    if torch.isnan(debug_data_buffer[:4]).any():
+        print("debug_data_buffer contains NaN")
+    else:
+        print("No NaN in debug_data_buffer")
+    print(debug_data_buffer[:4])
     print("o_extend")
     print(o_extend[:4, :4])
 

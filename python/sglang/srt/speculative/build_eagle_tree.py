@@ -91,9 +91,10 @@ def build_tree_kernel(parent_list, top_score_index, seq_lens, topk, depth, draft
         (bs, draft_token, depth + 2), -1, device=device, dtype=torch.long
     )
     positions = torch.empty((bs * draft_token,), device=device, dtype=torch.long)
-    
+
     from remote_pdb import RemotePdb
-    RemotePdb('127.0.0.1', 7728).set_trace()
+
+    RemotePdb("127.0.0.1", 7728).set_trace()
     kernels.build_tree(
         parent_list,
         top_score_index,

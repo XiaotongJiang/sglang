@@ -31,9 +31,9 @@ class TestEAGLEEngine(unittest.TestCase):
             speculative_num_steps=3,
             speculative_eagle_topk=4,
             speculative_num_draft_tokens=16,
-            disable_cuda_graph = True,
-            watchdog_timeout = 10000000,i
-            attention_backend="triton"
+            disable_cuda_graph=True,
+            watchdog_timeout=10000000,
+            attention_backend="triton",
         )
         out1 = engine.generate(prompt, sampling_params)["text"]
         engine.shutdown()

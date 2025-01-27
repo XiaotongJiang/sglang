@@ -1,0 +1,28 @@
+ForwardBatch contents:
+forward_mode: ForwardMode.DECODE
+input_ids: tensor([ 6575,    13, 29889,   297], device='cuda:0')
+positions: tensor([10, 10, 10, 10], device='cuda:0')
+input_embeds: None
+sampling_info: SamplingBatchInfo(temperatures=tensor([[1.]], device='cuda:0'), top_ps=tensor([1.], device='cuda:0'), top_ks=tensor([1], device='cuda:0', dtype=torch.int32), min_ps=tensor([0.], device='cuda:0'), is_all_greedy=True, need_min_p_sampling=False, vocab_size=32000, grammars=None, sampling_info_done=None, logit_bias=None, vocab_mask=None, apply_mask=None, penalizer_orchestrator=<sglang.srt.sampling.penaltylib.orchestrator.BatchedPenalizerOrchestrator object at 0x7f2a24b5a350>, linear_penalties=None, scaling_penalties=None, device='cuda')
+return_logprob: False
+top_logprobs_nums: None
+spec_info: {'prev_mode': <ForwardMode.EXTEND: 2>, 'sample_output': tensor([[1.3355e-08, 1.2497e-08, 2.4154e-03,  ..., 4.9098e-07, 1.8651e-08,
+         2.6564e-07]], device='cuda:0'), 'scores': tensor([[0.0906, 0.0812, 0.0529, 0.0485]], device='cuda:0'), 'score_list': [tensor([[[0.0906, 0.0812, 0.0529, 0.0485]]], device='cuda:0')], 'token_list': [tensor([[ 6575,    13, 29889,   297]], device='cuda:0')], 'origin_score_list': [tensor([[0.0906, 0.0812, 0.0529, 0.0485]], device='cuda:0')], 'parents_list': [tensor([[-1,  0,  1,  2,  3]], device='cuda:0')], 'cache_list': [tensor([11, 12, 13, 14], device='cuda:0', dtype=torch.int32)], 'iter': 1, 'hidden_states': tensor([[ 1.4375, -2.2109,  1.2959,  ..., -0.5645,  0.5137, -0.2434],
+        [ 1.4375, -2.2109,  1.2959,  ..., -0.5645,  0.5137, -0.2434],
+        [ 1.4375, -2.2109,  1.2959,  ..., -0.5645,  0.5137, -0.2434],
+        [ 1.4375, -2.2109,  1.2959,  ..., -0.5645,  0.5137, -0.2434]],
+       device='cuda:0', dtype=torch.float16), 'verified_id': tensor([372], device='cuda:0', dtype=torch.int32), 'positions': tensor([10, 10, 10, 10], device='cuda:0'), 'accept_length': None, 'has_finished': False, 'unfinished_index': None, 'topk': 4, 'num_verify_token': 16, 'spec_steps': 3}
+attn_metadata: None
+kv_caches: None
+kv_cache_dtype: None
+kv_cache_fp8_scale: None
+kv_cache_fp8_scale_inv: None
+out: LogitsProcessorOutput(next_token_logits=tensor([[-2.5977, -1.5928,  9.0078,  ...,  0.2556, -2.0957,  0.9595],
+        [-4.6445, -4.0469,  7.6953,  ..., -1.2109, -3.8398, -1.3252],
+        [-4.9492, -4.8477,  7.8516,  ..., -1.4648, -3.2012, -1.6680],
+        [-2.3848, -1.9863,  8.1641,  ...,  0.7734, -2.9590, -0.0136]],
+       device='cuda:0'), hidden_states=tensor([[ 0.9214, -2.2637,  2.4316,  ..., -0.4414,  0.7715, -1.1309],
+        [ 2.5137, -1.9277,  1.7881,  ...,  0.6406,  0.1304, -0.0803],
+        [ 2.1758, -2.2539,  2.4590,  ...,  0.2207,  1.1953, -0.1582],
+        [ 1.1758, -1.9609,  1.5176,  ..., -0.2402,  0.6074, -0.4849]],
+       device='cuda:0', dtype=torch.float16), next_token_logprobs=None, next_token_top_logprobs_val=None, next_token_top_logprobs_idx=None, input_token_logprobs=None, input_top_logprobs_val=None, input_top_logprobs_idx=None)
