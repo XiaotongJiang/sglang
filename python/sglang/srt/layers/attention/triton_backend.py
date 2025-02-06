@@ -162,6 +162,10 @@ class TritonAttnBackend(AttentionBackend):
                 custom_mask = forward_batch.spec_info.tree_mask
                 custom_mask = custom_mask != 0  # e.g. shape [stride_cm, stride_cm]
 
+        if layer.layer_id == 0:
+            from remote_pdb import RemotePdb
+
+            RemotePdb("127.0.0.1", 7728).set_trace()
         self.extend_attention_fwd(
             q.view(-1, layer.tp_q_head_num, layer.qk_head_dim),
             k.contiguous(),
@@ -179,16 +183,16 @@ class TritonAttnBackend(AttentionBackend):
             layer.logit_cap,
             custom_mask,
         )
-        # print("============Input parameters for extend_attention_fwd:")
-        # print(f"input_ids: {forward_batch.input_ids}")
-        # print(f"positoons: {forward_batch.positions}")
-        # print(f"mode: {forward_batch.forward_mode}")
-        # print(f"forward_batch.seq_lens: {forward_batch.seq_lens.shape}")
-        # print(f"forward_batch.extend_seq_lens: {forward_batch.extend_seq_lens.shape}")
-        # print(f"forward_batch.extend_start_loc: {forward_batch.extend_start_loc.shape}")
-        # print(f"max_extend_len: {max_extend_len}")
-        # if torch.isnan(o).any():
-        #     print("o contains NaN")
+        print("============Input parameters for extend_attention_fwd:")
+        print(f"input_ids: {forward_batch.input_ids}")
+        print(f"positoons: {forward_batch.positions}")
+        print(f"mode: {forward_batch.forward_mode}")
+        print(f"forward_batch.seq_lens: {forward_batch.seq_lens.shape}")
+        print(f"forward_batch.extend_seq_lens: {forward_batch.extend_seq_lens.shape}")
+        print(f"forward_batch.extend_start_loc: {forward_batch.extend_start_loc.shape}")
+        print(f"max_extend_len: {max_extend_len}")
+        if torch.isnan(o).any():
+            print("o contains NaN")
         return o
 
     def forward_decode(

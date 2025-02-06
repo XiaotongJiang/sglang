@@ -389,65 +389,65 @@ def extend_attention_fwd(
             print("No NaN in debug_data_buffer")
         print(q_extend[0, 0, :BLOCK_M])
 
-    print("fwd_kernel inputs:")
-    print("q_extend: ", q_extend, "shape:", q_extend.shape)
-    print("k_extend: ", k_extend, "shape:", k_extend.shape)
-    print("v_extend: ", v_extend, "shape:", v_extend.shape)
-    print("o_extend: ", o_extend, "shape:", o_extend.shape)
-    print("k_buffer: ", k_buffer, "shape:", k_buffer.shape)
-    print("v_buffer: ", v_buffer, "shape:", v_buffer.shape)
-    print("req_to_tokens: ", req_to_tokens, "shape:", req_to_tokens.shape)
-    print("b_req_idx: ", b_req_idx, "shape:", b_req_idx.shape)
-    print("b_seq_len: ", b_seq_len, "shape:", b_seq_len.shape)
-    print(
-        "b_start_loc_extend: ", b_start_loc_extend, "shape:", b_start_loc_extend.shape
-    )
-    print("b_seq_len_extend: ", b_seq_len_extend, "shape:", b_seq_len_extend.shape)
-    print("sm_scale: ", sm_scale)
-    print("kv_group_num: ", kv_group_num)
-    print(
-        "q_extend.shape[1] * q_extend.shape[2]: ", q_extend.shape[1] * q_extend.shape[2]
-    )
-    print("q_extend.shape[2]: ", q_extend.shape[2])
-    print(
-        "k_extend.shape[1] * k_extend.shape[2]: ", k_extend.shape[1] * k_extend.shape[2]
-    )
-    print("k_extend.shape[2]: ", k_extend.shape[2])
-    print(
-        "v_extend.shape[1] * v_extend.shape[2]: ", v_extend.shape[1] * v_extend.shape[2]
-    )
-    print("v_extend.shape[2]: ", v_extend.shape[2])
-    print(
-        "o_extend.shape[1] * o_extend.shape[2]: ", o_extend.shape[1] * o_extend.shape[2]
-    )
-    print("o_extend.shape[2]: ", o_extend.shape[2])
-    print(
-        "k_buffer.shape[1] * k_buffer.shape[2]: ", k_buffer.shape[1] * k_buffer.shape[2]
-    )
-    print("k_buffer.shape[2]: ", k_buffer.shape[2])
-    print(
-        "v_buffer.shape[1] * v_buffer.shape[2]: ", v_buffer.shape[1] * v_buffer.shape[2]
-    )
-    print("v_buffer.shape[2]: ", v_buffer.shape[2])
-    print("req_to_tokens.stride(0): ", req_to_tokens.stride(0))
-    print("logit_cap: ", logit_cap)
-    print("BLOCK_DMODEL: ", BLOCK_DMODEL)
-    print("BLOCK_DPE: ", BLOCK_DPE)
-    print("BLOCK_DV: ", BLOCK_DV)
-    print("BLOCK_M: ", BLOCK_M)
-    print("BLOCK_N: ", BLOCK_N)
-    print("Lq: ", Lq)
-    print("Lv: ", Lv)
-    print(
-        "custom_mask: ",
-        padded_custom_mask if custom_mask is not None else None,
-        "shape:",
-        padded_custom_mask.shape if custom_mask is not None else None,
-    )
-    print("num_warps: ", num_warps)
-    print("num_stages: ", num_stages)
-    print("debug_data_buffer: ", debug_data_buffer, "shape:", debug_data_buffer.shape)
-    print("extra_kargs: ", extra_kargs)
+    # print("fwd_kernel inputs:")
+    # print("q_extend: ", q_extend, "shape:", q_extend.shape)
+    # print("k_extend: ", k_extend, "shape:", k_extend.shape)
+    # print("v_extend: ", v_extend, "shape:", v_extend.shape)
+    # print("o_extend: ", o_extend, "shape:", o_extend.shape)
+    # print("k_buffer: ", k_buffer, "shape:", k_buffer.shape)
+    # print("v_buffer: ", v_buffer, "shape:", v_buffer.shape)
+    # print("req_to_tokens: ", req_to_tokens, "shape:", req_to_tokens.shape)
+    # print("b_req_idx: ", b_req_idx, "shape:", b_req_idx.shape)
+    # print("b_seq_len: ", b_seq_len, "shape:", b_seq_len.shape)
+    # print(
+    #     "b_start_loc_extend: ", b_start_loc_extend, "shape:", b_start_loc_extend.shape
+    # )
+    # print("b_seq_len_extend: ", b_seq_len_extend, "shape:", b_seq_len_extend.shape)
+    # print("sm_scale: ", sm_scale)
+    # print("kv_group_num: ", kv_group_num)
+    # print(
+    #     "q_extend.shape[1] * q_extend.shape[2]: ", q_extend.shape[1] * q_extend.shape[2]
+    # )
+    # print("q_extend.shape[2]: ", q_extend.shape[2])
+    # print(
+    #     "k_extend.shape[1] * k_extend.shape[2]: ", k_extend.shape[1] * k_extend.shape[2]
+    # )
+    # print("k_extend.shape[2]: ", k_extend.shape[2])
+    # print(
+    #     "v_extend.shape[1] * v_extend.shape[2]: ", v_extend.shape[1] * v_extend.shape[2]
+    # )
+    # print("v_extend.shape[2]: ", v_extend.shape[2])
+    # print(
+    #     "o_extend.shape[1] * o_extend.shape[2]: ", o_extend.shape[1] * o_extend.shape[2]
+    # )
+    # print("o_extend.shape[2]: ", o_extend.shape[2])
+    # print(
+    #     "k_buffer.shape[1] * k_buffer.shape[2]: ", k_buffer.shape[1] * k_buffer.shape[2]
+    # )
+    # print("k_buffer.shape[2]: ", k_buffer.shape[2])
+    # print(
+    #     "v_buffer.shape[1] * v_buffer.shape[2]: ", v_buffer.shape[1] * v_buffer.shape[2]
+    # )
+    # print("v_buffer.shape[2]: ", v_buffer.shape[2])
+    # print("req_to_tokens.stride(0): ", req_to_tokens.stride(0))
+    # print("logit_cap: ", logit_cap)
+    # print("BLOCK_DMODEL: ", BLOCK_DMODEL)
+    # print("BLOCK_DPE: ", BLOCK_DPE)
+    # print("BLOCK_DV: ", BLOCK_DV)
+    # print("BLOCK_M: ", BLOCK_M)
+    # print("BLOCK_N: ", BLOCK_N)
+    # print("Lq: ", Lq)
+    # print("Lv: ", Lv)
+    # print(
+    #     "custom_mask: ",
+    #     padded_custom_mask if custom_mask is not None else None,
+    #     "shape:",
+    #     padded_custom_mask.shape if custom_mask is not None else None,
+    # )
+    # print("num_warps: ", num_warps)
+    # print("num_stages: ", num_stages)
+    # print("debug_data_buffer: ", debug_data_buffer, "shape:", debug_data_buffer.shape)
+    # print("extra_kargs: ", extra_kargs)
     _fwd_kernel[grid](
         q_extend,
         k_extend,
@@ -489,14 +489,14 @@ def extend_attention_fwd(
         debug_data_buffer=debug_data_buffer,
         **extra_kargs,
     )
-    print("debug_data_buffer")
-    if torch.isnan(debug_data_buffer[:4]).any():
-        print("debug_data_buffer contains NaN")
-    else:
-        print("No NaN in debug_data_buffer")
-    print(debug_data_buffer[:4])
-    print("o_extend")
-    print(o_extend[:4, :4])
+    # print("debug_data_buffer")
+    # if torch.isnan(debug_data_buffer[:4]).any():
+    #     print("debug_data_buffer contains NaN")
+    # else:
+    #     print("No NaN in debug_data_buffer")
+    # print(debug_data_buffer[:4])
+    # print("o_extend")
+    # print(o_extend[:4, :4])
 
 
 def redundant_attention(
