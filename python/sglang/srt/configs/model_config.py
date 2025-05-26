@@ -160,7 +160,7 @@ class ModelConfig:
             or "DeepseekV3ForCausalLMNextN" in self.hf_config.architectures
             or "LlamaForCausalLMMLA" in self.hf_config.architectures
         ):
-g            self.attention_arch = AttentionArch.MLA
+            self.attention_arch = AttentionArch.MLA
             self.kv_lora_rank = self.hf_config.kv_lora_rank
             self.qk_nope_head_dim = self.hf_config.qk_nope_head_dim
             self.qk_rope_head_dim = self.hf_config.qk_rope_head_dim
