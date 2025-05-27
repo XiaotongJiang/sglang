@@ -550,6 +550,9 @@ class DeepseekV2AttentionMLA(nn.Module):
         config: PretrainedConfig,
         hidden_size: int,
         num_heads: int,
+        num_kv_heads: int,
+        qk_nope_head_dim_per_head: int,
+        qk_rope_head_dim_per_head: int,
         qk_nope_head_dim: int,
         qk_rope_head_dim: int,
         v_head_dim: int,
@@ -567,9 +570,12 @@ class DeepseekV2AttentionMLA(nn.Module):
         super().__init__()
         self.layer_id = layer_id
         self.hidden_size = hidden_size
+        self.qk_nope_head_dim_per_head = qk_nope_head_dim_per_head
+        self.qk_rope_head_dim_per_head = qk_rope_head_dim_per_head
         self.qk_nope_head_dim = qk_nope_head_dim
         self.qk_rope_head_dim = qk_rope_head_dim
         self.qk_head_dim = qk_nope_head_dim + qk_rope_head_dim
+        self.qk_head_dim_per_head = qk_nope_head_dim_per_head + qk_rope_head_dim_per_head
         self.v_head_dim = v_head_dim
         self.q_lora_rank = q_lora_rank
         self.kv_lora_rank = kv_lora_rank
@@ -579,6 +585,7 @@ class DeepseekV2AttentionMLA(nn.Module):
         self.num_heads = num_heads
         assert num_heads % attn_tp_size == 0
         self.num_local_heads = num_heads // attn_tp_size
+        self.num_kv_heads = num_kv_heads
         self.scaling = self.qk_head_dim**-0.5
         self.rope_theta = rope_theta
         self.max_position_embeddings = max_position_embeddings
@@ -605,7 +612,7 @@ class DeepseekV2AttentionMLA(nn.Module):
         else:
             self.q_proj = ColumnParallelLinear(
                 self.hidden_size,
-                self.num_heads * self.qk_head_dim,
+                self.num_heads * self.qk_head_dim_per_head,
                 bias=False,
                 quant_config=quant_config,
                 prefix=add_prefix("q_proj", prefix),
@@ -622,7 +629,7 @@ class DeepseekV2AttentionMLA(nn.Module):
 
         self.kv_b_proj = ColumnParallelLinear(
             self.kv_lora_rank,
-            self.num_heads * (self.qk_nope_head_dim + self.v_head_dim),
+            self.num_kv_heads * (self.qk_nope_head_dim_per_head + self.v_head_dim),
             bias=False,
             quant_config=quant_config,
             prefix=add_prefix("kv_b_proj", prefix),
@@ -631,8 +638,8 @@ class DeepseekV2AttentionMLA(nn.Module):
         )
         # O projection.
         self.o_proj = RowParallelLinear(
-            self.num_heads * self.v_head_dim,
-            self.hidden_size,
+            self.kv_lora_rank, # 256 = 2048
+            self.hidden_size, # 2048
             bias=False,
             quant_config=quant_config,
             reduce_results=reduce_results,
@@ -646,8 +653,8 @@ class DeepseekV2AttentionMLA(nn.Module):
             rope_scaling["rope_type"] = "deepseek_yarn"
 
         self.rotary_emb = get_rope(
-            qk_rope_head_dim,
-            rotary_dim=qk_rope_head_dim,
+            self.num_local_heads,
+            rotary_dim=self.num_local_heads,
             max_position=max_position_embeddings,
             base=rope_theta,
             rope_scaling=rope_scaling,
@@ -666,7 +673,7 @@ class DeepseekV2AttentionMLA(nn.Module):
             self.num_local_heads,
             self.kv_lora_rank + self.qk_rope_head_dim,
             self.scaling,
-            num_kv_heads=1,
+            num_kv_heads=self.num_kv_heads,
             layer_id=layer_id,
             v_head_dim=self.kv_lora_rank,
             quant_config=quant_config,
@@ -928,13 +935,12 @@ class DeepseekV2AttentionMLA(nn.Module):
             q = self.q_b_proj(q)[0].view(-1, self.num_local_heads, self.qk_head_dim)
         else:
             q = self.q_proj(hidden_states)[0].view(
-                -1, self.num_local_heads, self.qk_head_dim
+                -1, self.num_local_heads, self.qk_head_dim_per_head
             )
             latent_cache = self.kv_a_proj_with_mqa(hidden_states)[0]
             k_nope = latent_cache[..., : self.kv_lora_rank]
             k_nope = self.kv_a_layernorm(k_nope).unsqueeze(1)
-
-        q_nope, q_pe = q.split([self.qk_nope_head_dim, self.qk_rope_head_dim], dim=-1)
+        q_nope, q_pe = q.split([self.qk_nope_head_dim_per_head, self.qk_rope_head_dim_per_head], dim=-1)
         k_pe = latent_cache[..., self.kv_lora_rank :].unsqueeze(1)
 
         if self.use_deep_gemm_bmm:
@@ -967,10 +973,12 @@ class DeepseekV2AttentionMLA(nn.Module):
                 q_nope_val, self.w_kc, q_nope_scale, self.w_scale, torch.bfloat16
             )
         else:
-            q_nope_out = torch.bmm(q_nope.transpose(0, 1), self.w_kc)
+            w_kc_per_head = self.w_kc.view(self.num_kv_heads, -1, self.w_kc.shape[1])
+            n_gqa_group = self.num_local_heads // self.num_kv_heads
+            q_nope_out = torch.bmm(q_nope.transpose(0, 1), torch.repeat_interleave(w_kc_per_head, repeats=n_gqa_group, dim=0))
 
         q_nope_out = q_nope_out.transpose(0, 1)
-        q_pe, k_pe = self.rotary_emb(positions, q_pe, k_pe)
+        q_pe, k_pe = self.rotary_emb(positions, q_pe, torch.repeat_interleave(k_pe, repeats=self.num_kv_heads, dim=1))
 
         return q_pe, k_pe, q_nope_out, k_nope, forward_batch, zero_allocator
 
@@ -1051,10 +1059,10 @@ class DeepseekV2AttentionMLA(nn.Module):
             q = self.q_b_proj(q)[0].view(-1, self.num_local_heads, self.qk_head_dim)
         else:
             q = self.q_proj(hidden_states)[0].view(
-                -1, self.num_local_heads, self.qk_head_dim
+                -1, self.num_local_heads, self.qk_head_dim_per_head
             )
             latent_cache = self.kv_a_proj_with_mqa(hidden_states)[0]
-        q_nope, q_pe = q.split([self.qk_nope_head_dim, self.qk_rope_head_dim], dim=-1)
+        q_nope, q_pe = q.split([self.qk_nope_head_dim_per_head, self.qk_rope_head_dim_per_head], dim=-1)
 
         if self.w_kc.dtype == torch.float8_e4m3fnuz:
             # TODO(kernel): add bmm_fp8 for torch.float8_e4m3fnuz
@@ -1367,6 +1375,9 @@ class DeepseekV2DecoderLayer(nn.Module):
             config=config,
             hidden_size=self.hidden_size,
             num_heads=config.num_attention_heads,
+            num_kv_heads=config.num_key_value_heads,
+            qk_nope_head_dim_per_head=config.qk_nope_head_dim_per_head,
+            qk_rope_head_dim_per_head=config.qk_rope_head_dim_per_head,
             qk_nope_head_dim=config.qk_nope_head_dim,
             qk_rope_head_dim=config.qk_rope_head_dim,
             v_head_dim=config.v_head_dim,

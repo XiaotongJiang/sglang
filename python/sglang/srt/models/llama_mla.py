@@ -242,6 +242,9 @@ class LlamaDecoderLayer(nn.Module):
             config=config,
             hidden_size=self.hidden_size,
             num_heads=config.num_attention_heads,
+            num_kv_heads=config.num_key_value_heads,
+            qk_nope_head_dim_per_head=config.qk_nope_head_dim_per_head,
+            qk_rope_head_dim_per_head=config.qk_rope_head_dim_per_head,
             qk_nope_head_dim=config.qk_nope_head_dim,
             qk_rope_head_dim=config.qk_rope_head_dim,
             v_head_dim=config.v_head_dim,
@@ -437,9 +440,9 @@ class LlamaForCausalLMMLA(nn.Module):
     column_parallel_weights_modules = [".down_proj.", ".o_proj."]
     bitsandbytes_stacked_params_mapping = {
         # shard_name, weight_name, index
-        ".q_proj": (".qkv_proj", 0),
-        ".k_proj": (".qkv_proj", 1),
-        ".v_proj": (".qkv_proj", 2),
+        # ".q_proj": (".qkv_proj", 0),
+        # ".k_proj": (".qkv_proj", 1),
+        # ".v_proj": (".qkv_proj", 2),
         ".gate_proj": (".gate_up_proj", 0),
         ".up_proj": (".gate_up_proj", 1),
     }
@@ -470,9 +473,9 @@ class LlamaForCausalLMMLA(nn.Module):
         self.pooler = Pooler(pooling_type=PoolingType.LAST, normalize=True)
         self.stacked_params_mapping = [
             # (param_name, shard_name, shard_id)
-            (".qkv_proj", ".q_proj", "q"),
-            (".qkv_proj", ".k_proj", "k"),
-            (".qkv_proj", ".v_proj", "v"),
+            # (".qkv_proj", ".q_proj", "q"),
+            # (".qkv_proj", ".k_proj", "k"),
+            # (".qkv_proj", ".v_proj", "v"),
             (".gate_up_proj", ".gate_proj", 0),
             (".gate_up_proj", ".up_proj", 1),
         ]
@@ -676,8 +679,8 @@ class LlamaForCausalLMMLA(nn.Module):
                     )
 
             w_kc, w_vc = w.unflatten(
-                0, (-1, self_attn.qk_nope_head_dim + self_attn.v_head_dim)
-            ).split([self_attn.qk_nope_head_dim, self_attn.v_head_dim], dim=1)
+                0, (-1, self_attn.qk_nope_head_dim + self_attn.v_head_dim * self_attn.num_kv_heads)
+            ).split([self_attn.qk_nope_head_dim, self_attn.v_head_dim * self_attn.num_kv_heads], dim=1)
             if not use_deep_gemm_bmm:
                 self_attn.w_kc = w_kc.transpose(1, 2).contiguous().transpose(1, 2)
                 self_attn.w_vc = w_vc.contiguous().transpose(1, 2)
@@ -704,9 +707,9 @@ class LlamaForCausalLMMLA(nn.Module):
     def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]):
         stacked_params_mapping = [
             # (param_name, shard_name, shard_id)
-            (".qkv_proj", ".q_proj", "q"),
-            (".qkv_proj", ".k_proj", "k"),
-            (".qkv_proj", ".v_proj", "v"),
+            # (".qkv_proj", ".q_proj", "q"),
+            # (".qkv_proj", ".k_proj", "k"),
+            # (".qkv_proj", ".v_proj", "v"),
             (".gate_up_proj", ".gate_proj", 0),
             (".gate_up_proj", ".up_proj", 1),
         ]
@@ -766,7 +769,7 @@ class LlamaForCausalLMMLA(nn.Module):
                     weight_loader(param, loaded_weight)
                 else:
                     logger.warning(f"Parameter {name} not found in params_dict")
-        self.post_load_weights(is_next = is_next)
+        self.post_load_weights()
 
     def get_weights_by_name(
         self, name: str, truncate_size: int = 100, tp_size: int = 1
