@@ -535,12 +535,12 @@ class TritonAttnBackend(AttentionBackend):
         causal = True
         if layer.attn_type == AttentionType.ENCODER_ONLY:
             causal = False
-
+        batch_size = k.shape[0]
         self.extend_attention_fwd(
-            q.view(-1, layer.tp_q_head_num, layer.qk_head_dim),
+            q.view(batch_size, layer.tp_q_head_num, -1),
             k.contiguous(),
             v.contiguous(),
-            o.view(-1, layer.tp_q_head_num, layer.v_head_dim),
+            o.view(batch_size, layer.tp_q_head_num, -1),
             forward_batch.token_to_kv_pool.get_key_buffer(layer.layer_id),
             forward_batch.token_to_kv_pool.get_value_buffer(layer.layer_id),
             self.forward_metadata.qo_indptr,
@@ -575,6 +575,9 @@ class TritonAttnBackend(AttentionBackend):
             o = torch.empty_like(q)
 
         if save_kv_cache:
+            k_par1 = k[:, 0, :256]
+            k_par2 = k[:,0::4,-32:].reshape(k.shape[0], -1)
+            k = torch.cat([k_par1, k_par2], dim=-1)
             forward_batch.token_to_kv_pool.set_kv_buffer(
                 layer, forward_batch.out_cache_loc, k, v
             )

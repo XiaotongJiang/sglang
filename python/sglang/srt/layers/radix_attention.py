@@ -93,8 +93,9 @@ class RadixAttention(nn.Module):
             # For cross-layer sharing, kv can be None
             assert v is not None
             if "k_rope" not in kwargs:
-                k = k.view(-1, self.tp_k_head_num, self.qk_head_dim)
-                v = v.view(-1, self.tp_v_head_num, self.v_head_dim)
+                batch_size = k.shape[0]
+                k = k.view(batch_size, self.tp_k_head_num, -1)
+                v = v.view(batch_size, -1, self.v_head_dim)
             else:
                 k = k.view(-1, self.tp_k_head_num, self.v_head_dim)
 
