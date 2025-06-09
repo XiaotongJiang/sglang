@@ -208,6 +208,7 @@ def prepare_extend_inputs_for_correctness_test(
 
 def prepare_synthetic_inputs_for_latency_test(batch_size, input_len, output_len):
     input_ids = np.random.randint(0, 10000, (batch_size, input_len), dtype=np.int32)
+    # input_ids = [[1, 2]]
     sampling_params = SamplingParams(
         temperature=0,
         max_new_tokens=output_len,

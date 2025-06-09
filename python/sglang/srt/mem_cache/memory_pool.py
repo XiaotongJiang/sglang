@@ -607,7 +607,10 @@ class MLATokenToKVPool(KVCache):
                 self.store_dtype
             )
         else:
-            self.kv_buffer[layer_id - self.start_layer][loc] = cache_k
+            if cache_k.shape != self.kv_buffer[layer_id - self.start_layer][loc].shape:
+                self.kv_buffer[layer_id - self.start_layer][loc] = cache_k.unsqueeze(dim=1)
+            else:
+                self.kv_buffer[layer_id - self.start_layer][loc] = cache_k
 
     def set_mla_kv_buffer(
         self,

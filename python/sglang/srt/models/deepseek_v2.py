@@ -653,12 +653,12 @@ class DeepseekV2AttentionMLA(nn.Module):
             rope_scaling["rope_type"] = "deepseek_yarn"
 
         self.rotary_emb = get_rope(
-            self.num_local_heads,
-            rotary_dim=self.num_local_heads,
+            self.v_head_dim,
+            rotary_dim=self.v_head_dim,
             max_position=max_position_embeddings,
             base=rope_theta,
             rope_scaling=rope_scaling,
-            is_neox_style=False,
+            is_neox_style=True,
         )
 
         if rope_scaling:
@@ -773,6 +773,22 @@ class DeepseekV2AttentionMLA(nn.Module):
             else:
                 return _dispatch_mla_subtype()
 
+    def customized_rope(self, positions, q_pe, k_pe):
+        # This is a customized rope function for gqa to mla
+        # We modify the q_pe and k_pe to include the non rope part
+        # then do the rope operation
+        # then split the q_pe and k_pe into the rope part and the non rope part
+        # only need the rope part
+        keep_dim = 16 # TODO: hardcode for now
+        k_pe = k_pe.reshape(k_pe.shape[0], self.num_kv_heads, -1)
+        q_customized = torch.cat([q_pe[..., :keep_dim], torch.zeros_like(q_pe[..., keep_dim:]), q_pe[..., keep_dim:], torch.zeros_like(q_pe[..., keep_dim:])], dim=-1)
+        k_customized = torch.cat([k_pe[..., :keep_dim], torch.zeros_like(k_pe[..., keep_dim:]), k_pe[..., keep_dim:], torch.zeros_like(k_pe[..., keep_dim:])], dim=-1)
+        q_customized, k_customized = self.rotary_emb(positions, q_customized, k_customized)
+
+        q_pe = torch.cat([q_customized[..., :keep_dim], q_customized[..., 2 * keep_dim: 3 * keep_dim]], dim=-1)
+        k_pe = torch.cat([k_customized[..., :keep_dim], k_customized[..., 2 * keep_dim: 3 * keep_dim]], dim=-1)
+        return q_pe, k_pe
+
     def op_prepare(self, state):
         state.attn_intermediate_state = self.forward_prepare(
             positions=state.positions,
@@ -868,28 +884,33 @@ class DeepseekV2AttentionMLA(nn.Module):
             q = self.q_a_layernorm(q)
             q = self.q_b_proj(q)[0].view(-1, self.num_local_heads, self.qk_head_dim)
         else:
-            q = self.q_proj(hidden_states)[0].view(
-                -1, self.num_local_heads, self.qk_head_dim_per_head
-            )
+            all_q = self.q_proj(hidden_states)[0]
+            all_q_nope, all_q_pe = all_q.split([self.num_local_heads * self.qk_nope_head_dim_per_head, self.num_local_heads * self.qk_rope_head_dim_per_head], dim=-1)
+            all_q_nope = all_q_nope.view(-1, self.num_local_heads, self.qk_nope_head_dim_per_head)
+            all_q_pe = all_q_pe.view(-1, self.num_local_heads, self.qk_rope_head_dim_per_head)
+            q = torch.cat([all_q_nope, all_q_pe], dim=-1)
+            # TODO: the way shuffling work is we have 2k, split it into [1k, 1k]
+            # [1k ,1k] : [nope, rope]
+            # we first split by 1k into 2 tensor of 1, 32, 32
+            # then concat on last dim to get 1, 32, 64 => this one we should be good
+            # watch out to do the same on the K side (first rope then nope)
             latent_cache = self.kv_a_proj_with_mqa(hidden_states)[0]
 
         _, q_pe = q.split([self.qk_nope_head_dim_per_head, self.qk_rope_head_dim_per_head], dim=-1)
         kv_a, _ = latent_cache.split([self.kv_lora_rank, self.qk_rope_head_dim], dim=-1)
         latent_cache = latent_cache.unsqueeze(1)
-        kv_a = self.kv_a_layernorm(kv_a.contiguous())
+        # kv_a = self.kv_a_layernorm(kv_a.contiguous())
         kv = self.kv_b_proj(kv_a)[0]
-        kv = kv.view(-1, self.num_kv_heads, self.qk_nope_head_dim_per_head + self.v_head_dim)
-        k_nope = kv[..., : self.qk_nope_head_dim_per_head]
-        v = kv[..., self.qk_nope_head_dim_per_head :]
+        k_nope = kv[..., : self.kv_lora_rank].view(-1, self.num_kv_heads, self.qk_nope_head_dim_per_head)
+        v = kv[..., self.kv_lora_rank :].view(-1, self.num_kv_heads, self.v_head_dim)
         k_pe = latent_cache[:, :, self.kv_lora_rank :]
-        q_pe, k_pe = self.rotary_emb(positions, q_pe, k_pe)
+        q_pe, k_pe = self.customized_rope(positions, q_pe, k_pe)
         q[..., self.qk_nope_head_dim_per_head :] = q_pe
         k = torch.empty((q.shape[0], self.num_kv_heads, q.shape[2]), device=q.device, dtype=q.dtype)
         k[..., : self.qk_nope_head_dim_per_head] = k_nope
         k[..., self.qk_nope_head_dim_per_head :] = k_pe.reshape(k.shape[0], -1, self.qk_rope_head_dim_per_head)
-
-        latent_cache[:, :, : self.kv_lora_rank] = kv_a.unsqueeze(1)
-        latent_cache[:, :, self.kv_lora_rank :] = k_pe
+        # latent_cache[:, :, : self.kv_lora_rank] = kv_a.unsqueeze(1)
+        latent_cache[:, :, self.kv_lora_rank :] = k_pe.view(k_pe.shape[0], 1, -1)
 
         # Save latent cache
         forward_batch.token_to_kv_pool.set_kv_buffer(
@@ -917,27 +938,33 @@ class DeepseekV2AttentionMLA(nn.Module):
             )
             k_nope = latent_cache[..., : self.kv_lora_rank]
 
-            # overlap qk norm
-            if self.alt_stream is not None and get_is_capture_mode():
-                current_stream = torch.cuda.current_stream()
-                self.alt_stream.wait_stream(current_stream)
-                q = self.q_a_layernorm(q)
-                with torch.cuda.stream(self.alt_stream):
-                    k_nope = self.kv_a_layernorm(k_nope)
-                current_stream.wait_stream(self.alt_stream)
-            else:
-                q = self.q_a_layernorm(q)
-                k_nope = self.kv_a_layernorm(k_nope)
+            # # overlap qk norm
+            # if self.alt_stream is not None and get_is_capture_mode():
+            #     current_stream = torch.cuda.current_stream()
+            #     self.alt_stream.wait_stream(current_stream)
+            #     q = self.q_a_layernorm(q)
+            #     with torch.cuda.stream(self.alt_stream):
+            #         k_nope = self.kv_a_layernorm(k_nope)
+            #     current_stream.wait_stream(self.alt_stream)
+            # else:
+            #     q = self.q_a_layernorm(q)
+            #     k_nope = self.kv_a_layernorm(k_nope)
 
             k_nope = k_nope.unsqueeze(1)
             q = self.q_b_proj(q)[0].view(-1, self.num_local_heads, self.qk_head_dim)
         else:
-            q = self.q_proj(hidden_states)[0].view(
-                -1, self.num_local_heads, self.qk_head_dim_per_head
-            )
+            # q = self.q_proj(hidden_states)[0].view(
+            #     -1, self.num_local_heads, self.qk_head_dim_per_head
+            # )
+            all_q = self.q_proj(hidden_states)[0]
+            all_q_nope, all_q_pe = all_q.split([self.num_local_heads * self.qk_nope_head_dim_per_head, self.num_local_heads * self.qk_rope_head_dim_per_head], dim=-1)
+            all_q_nope = all_q_nope.view(-1, self.num_local_heads, self.qk_nope_head_dim_per_head)
+            all_q_pe = all_q_pe.view(-1, self.num_local_heads, self.qk_rope_head_dim_per_head)
+            q = torch.cat([all_q_nope, all_q_pe], dim=-1)
             latent_cache = self.kv_a_proj_with_mqa(hidden_states)[0]
             k_nope = latent_cache[..., : self.kv_lora_rank]
-            k_nope = self.kv_a_layernorm(k_nope).unsqueeze(1)
+            k_nope = k_nope.unsqueeze(1)
+            # k_nope = self.kv_a_layernorm(k_nope).unsqueeze(1)
         q_nope, q_pe = q.split([self.qk_nope_head_dim_per_head, self.qk_rope_head_dim_per_head], dim=-1)
         k_pe = latent_cache[..., self.kv_lora_rank :].unsqueeze(1)
 
@@ -980,7 +1007,7 @@ class DeepseekV2AttentionMLA(nn.Module):
 
         k_pe = k_pe.view(-1, self.num_kv_heads, self.qk_rope_head_dim_per_head)
         
-        q_pe, k_pe = self.rotary_emb(positions, q_pe, torch.repeat_interleave(k_pe, repeats= (self.num_local_heads // self.num_kv_heads), dim=1))
+        q_pe, k_pe = self.customized_rope(positions, q_pe, k_pe)
 
         return q_pe, k_pe, q_nope_out, k_nope, forward_batch, zero_allocator
 
@@ -993,7 +1020,7 @@ class DeepseekV2AttentionMLA(nn.Module):
             )
         else:
             q = torch.cat([q_nope_out, q_pe], dim=-1)
-            k = torch.cat([torch.repeat_interleave(k_nope, repeats=self.num_local_heads, dim=1), k_pe], dim=-1)
+            k = torch.cat([torch.repeat_interleave(k_nope, repeats=self.num_local_heads, dim=1), torch.repeat_interleave(k_pe, repeats= (self.num_local_heads // self.num_kv_heads), dim=1)], dim=-1)
             attn_output = self.attn_mqa(q, k, k_nope, forward_batch)
         attn_output = attn_output.view(-1, self.num_local_heads, self.kv_lora_rank)
 
@@ -1033,9 +1060,10 @@ class DeepseekV2AttentionMLA(nn.Module):
                 torch.bfloat16,
             )
         else:
-            w_vc_per_head = self.w_vc.view(self.w_vc.shape[0], self.w_vc.shape[1], self.num_kv_heads, -1)
+            assert self.w_vc.shape[0] == 1
+            w_vc_per_head = self.w_vc.view(self.w_vc.shape[1], self.num_kv_heads, -1)
             w_vc_per_head = torch.repeat_interleave(w_vc_per_head, repeats= (self.num_local_heads // self.num_kv_heads), dim=-2)
-            attn_bmm_output = torch.einsum("b l h d, a h l -> b h d", w_vc_per_head, attn_output)
+            attn_bmm_output = torch.einsum("l h d, b h l -> b h d", w_vc_per_head, attn_output)
         attn_output = attn_bmm_output.reshape(attn_bmm_output.shape[0], -1)
         output, _ = self.o_proj(attn_output)
 

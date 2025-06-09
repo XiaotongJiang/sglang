@@ -528,8 +528,15 @@ class TritonAttnBackend(AttentionBackend):
             o = torch.empty_like(q)
 
         if save_kv_cache:
+            # k => 1, 32, 288 
+            qk_rope_head_dim = 32
+            rope_keys = k[..., 0::4, -qk_rope_head_dim:]
+            rope_keys = rope_keys.reshape(k.shape[0], -1)
+            nope_keys = k[..., 0, :-qk_rope_head_dim]
+            key_cache = torch.cat([rope_keys, nope_keys], dim=-1)
+
             forward_batch.token_to_kv_pool.set_kv_buffer(
-                layer, forward_batch.out_cache_loc, k, v
+                layer, forward_batch.out_cache_loc, key_cache, v
             )
 
         causal = True
