@@ -673,7 +673,7 @@ class DeepseekV2AttentionMLA(nn.Module):
             self.num_local_heads,
             self.kv_lora_rank + self.qk_rope_head_dim_per_head,
             self.scaling,
-            num_kv_heads=self.num_local_heads,
+            num_kv_heads=self.num_kv_heads,
             layer_id=layer_id,
             v_head_dim=self.kv_lora_rank,
             quant_config=quant_config,
@@ -1016,7 +1016,7 @@ class DeepseekV2AttentionMLA(nn.Module):
     ):
         if self.attention_backend == "fa3" or self.attention_backend == "flashinfer":
             attn_output = self.attn_mqa(
-                q_nope_out, k_nope, k_nope, forward_batch, q_rope=q_pe, k_rope=k_pe
+                q_nope_out, k_nope, k_nope, forward_batch, q_rope=q_pe, k_rope=torch.repeat_interleave(k_pe, repeats= (self.num_local_heads // self.num_kv_heads), dim=1)
             )
         else:
             q = torch.cat([q_nope_out, q_pe], dim=-1)
@@ -1329,9 +1329,14 @@ class DeepseekV2AttentionMLA(nn.Module):
             q = self.q_a_layernorm(q)
             q = self.q_b_proj(q)[0].view(-1, self.num_local_heads, self.qk_head_dim)
         else:
-            q = self.q_proj(hidden_states)[0].view(
-                -1, self.num_local_heads, self.qk_head_dim
-            )
+            all_q = self.q_proj(hidden_states)[0]
+            all_q_nope, all_q_pe = all_q.split([self.num_local_heads * self.qk_nope_head_dim_per_head, self.num_local_heads * self.qk_rope_head_dim_per_head], dim=-1)
+            all_q_nope = all_q_nope.view(-1, self.num_local_heads, self.qk_nope_head_dim_per_head)
+            all_q_pe = all_q_pe.view(-1, self.num_local_heads, self.qk_rope_head_dim_per_head)
+            q = torch.cat([all_q_nope, all_q_pe], dim=-1)
+            # q = self.q_proj(hidden_states)[0].view(
+            #     -1, self.num_local_heads, self.qk_head_dim
+            # )
             latent_cache = self.kv_a_proj_with_mqa(hidden_states)[0]
         _, q_pe = q.split([self.qk_nope_head_dim, self.qk_rope_head_dim], dim=-1)
         kv_a, _ = latent_cache.split([self.kv_lora_rank, self.qk_rope_head_dim], dim=-1)

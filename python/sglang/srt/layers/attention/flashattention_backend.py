@@ -805,29 +805,40 @@ class FlashAttentionBackend(AttentionBackend):
                     )
                 return output, lse
             else:
-                # Do absorbed multi-latent attention
+               # Do absorbed multi-latent attention
                 kv_cache = forward_batch.token_to_kv_pool.get_key_buffer(layer.layer_id)
                 k_rope = kv_cache[:, :, layer.v_head_dim :]
                 c_kv = kv_cache[:, :, : layer.v_head_dim]
+                # k_rope_cache = k_rope.view(
+                #     -1,
+                #     self.page_size,
+                #     8,
+                #     32,
+                # ).repeat_interleave(4, dim=2)
                 k_rope_cache = k_rope.view(
                     -1,
                     self.page_size,
                     layer.tp_k_head_num,
                     layer.head_dim - layer.v_head_dim,
                 )
+                # c_kv_cache = c_kv.view(
+                #     -1, self.page_size, 1, layer.v_head_dim
+                # ).repeat_interleave(32, dim=2)
                 c_kv_cache = c_kv.view(
-                    -1, self.page_size, layer.tp_v_head_num, layer.v_head_dim
+                    -1, self.page_size, 1 , layer.v_head_dim
                 )
                 if q_rope is not None:
                     q_nope = q.view(-1, layer.tp_q_head_num, layer.v_head_dim)
+                    batch_size = q_rope.shape[0]
                     q_rope = q_rope.view(
-                        -1, layer.tp_q_head_num, layer.head_dim - layer.v_head_dim
+                        batch_size, layer.tp_q_head_num, -1
                     )
                 else:
                     q_all = q.contiguous().view(-1, layer.tp_q_head_num, layer.head_dim)
                     q_nope = q_all[:, :, : layer.v_head_dim]
                     q_rope = q_all[:, :, layer.v_head_dim :]
 
+                import remote_pdb; remote_pdb.set_trace(host='0.0.0.0', port=4444)		    
                 result = flash_attn_with_kvcache(
                     q=q_rope,
                     k_cache=k_rope_cache,
