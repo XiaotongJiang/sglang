@@ -682,7 +682,7 @@ class DeepseekV2AttentionMLA(nn.Module):
 
         self.attn_mha = RadixAttention(
             self.num_local_heads,
-            self.qk_nope_head_dim + self.qk_rope_head_dim,
+            self.qk_nope_head_dim_per_head + self.qk_rope_head_dim_per_head,
             self.scaling,
             num_kv_heads=self.num_kv_heads,
             layer_id=layer_id,
@@ -759,6 +759,8 @@ class DeepseekV2AttentionMLA(nn.Module):
                 )
             ):
                 return AttnForwardMethod.MHA_CHUNKED_KV
+            elif forward_batch.forward_mode.is_extend():
+                return AttnForwardMethod.MHA
             else:
                 return _dispatch_mla_subtype()
         else:
@@ -918,9 +920,9 @@ class DeepseekV2AttentionMLA(nn.Module):
         )
         return q, k, v, forward_batch
 
-    def forward_normal_core(self, q, k, v, forward_batch):
-        attn_output = self.attn_mha(q, k, v, forward_batch, save_kv_cache=False)
-        attn_output = attn_output.reshape(-1, self.num_local_heads * self.v_head_dim)
+    def forward_normal_core(self, q, k, v, forward_batch):	    
+        attn_output = self.attn_mha(q, k, v, forward_batch, save_kv_cache=False, kv_b_proj = self.kv_b_proj)
+        attn_output = attn_output.reshape(-1, self.num_local_heads * self.v_head_dim)   
         output, _ = self.o_proj(attn_output)
         return output
 
@@ -1013,11 +1015,11 @@ class DeepseekV2AttentionMLA(nn.Module):
 
     def forward_absorb_core(
         self, q_pe, k_pe, q_nope_out, k_nope, forward_batch, zero_allocator
-    ):
+    ): 
         if self.attention_backend == "fa3" or self.attention_backend == "flashinfer":
             attn_output = self.attn_mqa(
                 q_nope_out, k_nope, k_nope, forward_batch, q_rope=q_pe, k_rope=torch.repeat_interleave(k_pe, repeats= (self.num_local_heads // self.num_kv_heads), dim=1)
-            )
+            )    
         else:
             q = torch.cat([q_nope_out, q_pe], dim=-1)
             k = torch.cat([torch.repeat_interleave(k_nope, repeats=self.num_local_heads, dim=1), torch.repeat_interleave(k_pe, repeats= (self.num_local_heads // self.num_kv_heads), dim=1)], dim=-1)
