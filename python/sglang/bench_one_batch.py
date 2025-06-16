@@ -168,7 +168,7 @@ def prepare_inputs_for_correctness_test(bench_args, tokenizer):
     ]
     input_ids = [tokenizer.encode(p) for p in prompts]
     sampling_params = SamplingParams(
-        temperature=0,
+        temperature=0.7,
         max_new_tokens=bench_args.output_len[0],
     )
 
