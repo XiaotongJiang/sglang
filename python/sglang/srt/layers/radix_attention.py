@@ -98,7 +98,7 @@ class RadixAttention(nn.Module):
                 v = v.view(batch_size, -1, self.v_head_dim)
             else:
                 batch_size = k.shape[0]
-                k = k.view(batch_size, self.tp_k_head_num, -1)
+                # k = k.view(batch_size, self.tp_k_head_num, -1)
 
         return forward_batch.attn_backend.forward(
             q,

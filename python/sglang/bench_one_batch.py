@@ -208,7 +208,7 @@ def prepare_extend_inputs_for_correctness_test(
 
 def prepare_synthetic_inputs_for_latency_test(batch_size, input_len, output_len):
     input_ids = np.random.randint(0, 10000, (batch_size, input_len), dtype=np.int32)
-    input_ids = [[1, 2, 16]]
+    input_ids = [[1, 2, 16]] #13, 578, 1176, 3094, 304
     sampling_params = SamplingParams(
         temperature=0,
         max_new_tokens=output_len,
@@ -376,12 +376,13 @@ def latency_test_run_once(
     synchronize(device)
     tic = time.perf_counter()
     next_token_ids, _, batch = extend(reqs, model_runner)
-    import remote_pdb; remote_pdb.set_trace(host='0.0.0.0', port=4444)	
+    print(next_token_ids)
     next_token_ids, _ = decode(next_token_ids, batch, model_runner)
-    import remote_pdb; remote_pdb.set_trace(host='0.0.0.0', port=4444)	
+    print(next_token_ids)   
     next_token_ids, _ = decode(next_token_ids, batch, model_runner)
-    import remote_pdb; remote_pdb.set_trace(host='0.0.0.0', port=4444)	
+    print(next_token_ids)
     next_token_ids, _ = decode(next_token_ids, batch, model_runner)
+    print(next_token_ids)
     synchronize(device)
     prefill_latency = time.perf_counter() - tic
     tot_latency += prefill_latency

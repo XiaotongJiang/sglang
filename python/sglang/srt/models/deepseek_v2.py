@@ -1017,8 +1017,10 @@ class DeepseekV2AttentionMLA(nn.Module):
         self, q_pe, k_pe, q_nope_out, k_nope, forward_batch, zero_allocator
     ): 
         if self.attention_backend == "fa3" or self.attention_backend == "flashinfer":
+            # k_rope=torch.repeat_interleave(k_pe, repeats= (self.num_local_heads // self.num_kv_heads), dim=1)
+            k_rope = k_pe.view(-1, 1, self.qk_rope_head_dim)
             attn_output = self.attn_mqa(
-                q_nope_out, k_nope, k_nope, forward_batch, q_rope=q_pe, k_rope=torch.repeat_interleave(k_pe, repeats= (self.num_local_heads // self.num_kv_heads), dim=1)
+                q_nope_out, k_nope, k_nope, forward_batch, q_rope=q_pe, k_rope=k_rope, kv_b_proj = self.kv_b_proj
             )    
         else:
             q = torch.cat([q_nope_out, q_pe], dim=-1)

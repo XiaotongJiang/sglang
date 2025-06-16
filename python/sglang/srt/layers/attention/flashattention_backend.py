@@ -932,6 +932,7 @@ class FlashAttentionBackend(AttentionBackend):
         # For multi-head latent attention
         q_rope: Optional[torch.Tensor] = None,
         k_rope: Optional[torch.Tensor] = None,
+        kv_b_proj: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         if k is not None:
             assert v is not None
@@ -1116,6 +1117,14 @@ class FlashAttentionBackend(AttentionBackend):
             #     -1, self.page_size, layer.tp_v_head_num, layer.v_head_dim
             # )
 
+
+            # Just for testing
+            k_nope_v_cache = kv_b_proj(c_kv)[0]
+            k_nope_cache = k_nope_v_cache[:, :, : layer.v_head_dim]
+            v_cache = k_nope_v_cache[:, :, layer.v_head_dim :]
+            # Just for testing
+
+
             if q_rope is not None:
                 q_nope = q.view(-1, layer.tp_q_head_num, layer.v_head_dim)
                 batch_size = q_rope.shape[0]
@@ -1138,7 +1147,7 @@ class FlashAttentionBackend(AttentionBackend):
                 cu_seqlens_q=metadata.cu_seqlens_q,
                 cu_seqlens_k_new=metadata.cu_seqlens_k,
                 max_seqlen_q=max_seqlen_q,
-                softmax_scale=layer.scaling,
+                softmax_scale=1/8,
                 causal=False if use_cascade_attn else causal,
                 softcap=layer.logit_cap,
                 k_descale=k_descale,
