@@ -1103,25 +1103,18 @@ class FlashAttentionBackend(AttentionBackend):
                 self.page_size,
                 8,
                 32,
-            ).repeat_interleave(4, dim=2)
-            # k_rope_cache = k_rope.view(
-            #     -1,
-            #     self.page_size,
-            #     layer.tp_k_head_num,
-            #     layer.head_dim - layer.v_head_dim,
-            # )
-            c_kv_cache = c_kv.view(
-                -1, self.page_size, 1, layer.v_head_dim
-            ).repeat_interleave(32, dim=2)
-            # c_kv_cache = c_kv.view(
-            #     -1, self.page_size, layer.tp_v_head_num, layer.v_head_dim
-            # )
+            )
+
+            c_kv_cache = (
+                c_kv.view(-1, self.page_size, 1, layer.v_head_dim)
+                    .expand(-1, -1, 8, -1)
+            )
 
 
             # Just for testing
-            k_nope_v_cache = kv_b_proj(c_kv)[0]
-            k_nope_cache = k_nope_v_cache[:, :, : layer.v_head_dim]
-            v_cache = k_nope_v_cache[:, :, layer.v_head_dim :]
+            # k_nope_v_cache = kv_b_proj(c_kv)[0]
+            # k_nope_cache = k_nope_v_cache[:, :, : layer.v_head_dim]
+            # v_cache = k_nope_v_cache[:, :, layer.v_head_dim :]
             # Just for testing
 
 
