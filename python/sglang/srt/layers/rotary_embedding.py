@@ -69,6 +69,7 @@ class RotaryEmbedding(CustomOp):
         base: int,
         is_neox_style: bool,
         dtype: torch.dtype,
+        use_mla: bool = False,
     ) -> None:
         super().__init__()
         self.head_size = head_size
@@ -77,13 +78,14 @@ class RotaryEmbedding(CustomOp):
         self.base = base
         self.is_neox_style = is_neox_style
         self.dtype = dtype
+        self.use_mla = use_mla
 
         cache = self._compute_cos_sin_cache()
         # NOTE(ByronHsu): cache needs to be in FP32 for numerical stability
         if not _is_cuda:
             cache = cache.to(dtype)
 
-        if not _is_cuda or self.head_size not in [64, 128, 256, 512]:
+        if not _is_cuda or self.head_size not in [32, 64, 128, 256, 512]:
             from vllm._custom_ops import rotary_embedding
 
             self.vllm_rotary_embedding = rotary_embedding
@@ -97,12 +99,24 @@ class RotaryEmbedding(CustomOp):
         # use CPU to compute the cache and then move it to GPU. However, we
         # create the cache on GPU for faster initialization. This may cause
         # a slight numerical difference between the HF implementation and ours.
-        inv_freq = 1.0 / (
-            base
-            ** (
-                torch.arange(0, self.rotary_dim, 2, dtype=torch.float) / self.rotary_dim
+        if self.use_mla:
+            keep_dim = self.rotary_dim // 4
+            inv_freq = 1.0 / (
+                base
+                ** (
+                    torch.cat([
+                        torch.arange(0, keep_dim, 2, dtype=torch.float) / self.rotary_dim,
+                        torch.arange(keep_dim * 2, keep_dim * 3, 2, dtype=torch.float) / self.rotary_dim
+                    ])
+                )
             )
-        )
+        else:
+            inv_freq = 1.0 / (
+                base
+                ** (
+                    torch.arange(0, self.rotary_dim, 2, dtype=torch.float) / self.rotary_dim
+                )
+            )
         return inv_freq
 
     def _compute_cos_sin_cache(self) -> torch.Tensor:
@@ -231,6 +245,7 @@ class LinearScalingRotaryEmbedding(RotaryEmbedding):
 
     def _compute_cos_sin_cache(self) -> torch.Tensor:
         inv_freq = self._compute_inv_freq(self.base)
+
         cache_list: List[torch.Tensor] = []
         # offsets to the next cache in a tensor.
         # Each offset corresponds to the same index in scaling_factors.
@@ -1070,6 +1085,7 @@ def get_rope(
     rope_scaling: Optional[Dict[str, Any]] = None,
     dtype: Optional[torch.dtype] = None,
     partial_rotary_factor: float = 1.0,
+    use_mla: bool = False,
 ) -> RotaryEmbedding:
     if dtype is None:
         dtype = torch.get_default_dtype()
@@ -1097,7 +1113,7 @@ def get_rope(
 
     if rope_scaling is None:
         rotary_emb = RotaryEmbedding(
-            head_size, rotary_dim, max_position, base, is_neox_style, dtype
+            head_size, rotary_dim, max_position, base, is_neox_style, dtype, use_mla=use_mla
         )
     else:
         if "rope_type" in rope_scaling:
@@ -1143,6 +1159,7 @@ def get_rope(
                     base,
                     is_neox_style,
                     dtype,
+                    use_mla=use_mla,
                 )
         elif scaling_type == "linear":
             scaling_factor = rope_scaling["factor"]

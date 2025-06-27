@@ -691,6 +691,7 @@ class LlamaForCausalLMMLA(nn.Module):
                     self_attn.w_scale = self_attn.kv_b_proj.weight_scale
                     if _is_hip:
                         self_attn.w_scale *= 2.0
+                # self_attn.w_fused = self._fuse_vc_o_proj_single_gpu(self_attn)
             else:
                 num_tiles_k = self_attn.qk_nope_head_dim // weight_block_size[1]
                 num_tiles_n = self_attn.v_head_dim // weight_block_size[0]
@@ -703,6 +704,36 @@ class LlamaForCausalLMMLA(nn.Module):
                 self_attn.w_vc = w_vc.contiguous()
                 self_attn.use_deep_gemm_bmm = True
 
+    def _fuse_vc_o_proj_single_gpu(self, self_attn):
+        """
+        Given a layer's self_attn that already owns
+            • self_attn.w_vc           – (H_kv, kv_lora_rank, v_dim)
+            • self_attn.o_proj.weight  – (hidden, H_local * v_dim)
+        build
+            • self_attn.w_fused        – (hidden, H_local * kv_lora_rank)
+        so that  matmul(attn_flat, w_fused.T)  replaces the two-step path.
+        """
+        # ---------- constants ----------
+        H_local = self_attn.num_local_heads
+        H_kv    = self_attn.num_kv_heads
+        g       = H_local // H_kv            # heads per KV group
+        Dv      = self_attn.v_head_dim
+        L       = self_attn.kv_lora_rank
+        H_out   = self_attn.hidden_size
+
+        # ---------- reshape the two source weights ----------
+        # o-proj : (H_out, H_local*Dv)  ->  (H_out, H_local, Dv)
+        W_o = self_attn.o_proj.weight.view(H_out, H_local, Dv)
+
+        w_vc_per_head = self_attn.w_vc.view(self_attn.w_vc.shape[1], H_kv, -1)
+        w_vc_per_head = torch.repeat_interleave(w_vc_per_head, repeats= (H_local // H_kv), dim=-2)
+        
+        # ---------- contract D_v (the value dim) ----------
+        # einsum : (o h d , h d l) -> (o h l)
+        W_fused = torch.einsum('ohd,lhd->ohl', W_o, w_vc_per_head) \
+                        .reshape(H_out, H_local * L)
+
+        return W_fused
 
     def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]):
         stacked_params_mapping = [

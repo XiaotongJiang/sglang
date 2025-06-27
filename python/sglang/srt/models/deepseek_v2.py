@@ -652,13 +652,15 @@ class DeepseekV2AttentionMLA(nn.Module):
         if rope_scaling:
             rope_scaling["rope_type"] = "deepseek_yarn"
 
+        self.use_mla = True
         self.rotary_emb = get_rope(
-            self.v_head_dim,
+            self.v_head_dim // 2 if self.use_mla else self.v_head_dim,
             rotary_dim=self.v_head_dim,
             max_position=max_position_embeddings,
             base=rope_theta,
             rope_scaling=rope_scaling,
             is_neox_style=True,
+            use_mla=self.use_mla,
         )
 
         if rope_scaling:
@@ -696,6 +698,7 @@ class DeepseekV2AttentionMLA(nn.Module):
         self.w_kc = None
         self.w_vc = None
         self.w_scale = None
+        self.w_fused = None
 
         self.w_scale_k = None
         self.w_scale_v = None
@@ -781,15 +784,50 @@ class DeepseekV2AttentionMLA(nn.Module):
         # then do the rope operation
         # then split the q_pe and k_pe into the rope part and the non rope part
         # only need the rope part
-        keep_dim = 16 # TODO: hardcode for now
-        k_pe = k_pe.reshape(k_pe.shape[0], self.num_kv_heads, -1)
-        q_customized = torch.cat([q_pe[..., :keep_dim], torch.zeros_like(q_pe[..., keep_dim:]), q_pe[..., keep_dim:], torch.zeros_like(q_pe[..., keep_dim:])], dim=-1)
-        k_customized = torch.cat([k_pe[..., :keep_dim], torch.zeros_like(k_pe[..., keep_dim:]), k_pe[..., keep_dim:], torch.zeros_like(k_pe[..., keep_dim:])], dim=-1)
-        q_customized, k_customized = self.rotary_emb(positions, q_customized, k_customized)
+        k_pe = k_pe.view(k_pe.shape[0], self.num_kv_heads, -1)
+        if self.use_mla:
+            q_pe, k_pe = self.rotary_emb(positions, q_pe, k_pe)
+            return q_pe, k_pe
+        else:
+            keep_dim = 16 # TODO: hardcode for now
+            rope_dim  = q_pe.size(-1) - keep_dim
+            pad_dim   = keep_dim + 3 * rope_dim  # padded width the rotary kernel needs
+            def _alloc_scratch(name, like, pad_dim):
+                buf = getattr(self, name, None)
+                if buf is None or buf.size(0) < like.size(0):
+                    buf = torch.empty(
+                        like.size(0), like.size(1), pad_dim,
+                        dtype=like.dtype, device=like.device
+                    )
+                    setattr(self, name, buf)
+                return buf[:like.size(0)]
 
-        q_pe = torch.cat([q_customized[..., :keep_dim], q_customized[..., 2 * keep_dim: 3 * keep_dim]], dim=-1)
-        k_pe = torch.cat([k_customized[..., :keep_dim], k_customized[..., 2 * keep_dim: 3 * keep_dim]], dim=-1)
-        return q_pe, k_pe
+            q_pad = _alloc_scratch('_rope_q_buf', q_pe, pad_dim)
+            k_pad = _alloc_scratch('_rope_k_buf', k_pe, pad_dim)
+
+            q_pad[..., :keep_dim]                        = q_pe[..., :keep_dim]
+            q_pad[..., keep_dim + rope_dim : keep_dim + 2*rope_dim] = q_pe[..., keep_dim:]
+
+            k_pad[..., :keep_dim]                        = k_pe[..., :keep_dim]
+            k_pad[..., keep_dim + rope_dim : keep_dim + 2*rope_dim] = k_pe[..., keep_dim:]
+            q_rot, k_rot = self.rotary_emb(positions, q_pad, k_pad)
+
+            q_pe[..., :keep_dim] = q_rot[..., :keep_dim]
+            q_pe[..., keep_dim:] = q_rot[..., keep_dim + 2*rope_dim : keep_dim + 3*rope_dim]
+
+            k_pe[..., :keep_dim] = k_rot[..., :keep_dim]
+            k_pe[..., keep_dim:] = k_rot[..., keep_dim + 2*rope_dim : keep_dim + 3*rope_dim]
+
+            return q_pe, k_pe
+
+            k_pe = k_pe.view(k_pe.shape[0], self.num_kv_heads, -1)
+            q_customized = torch.cat([q_pe[..., :keep_dim], torch.zeros_like(q_pe[..., keep_dim:]), q_pe[..., keep_dim:], torch.zeros_like(q_pe[..., keep_dim:])], dim=-1)
+            k_customized = torch.cat([k_pe[..., :keep_dim], torch.zeros_like(k_pe[..., keep_dim:]), k_pe[..., keep_dim:], torch.zeros_like(k_pe[..., keep_dim:])], dim=-1)
+            q_customized, k_customized = self.rotary_emb(positions, q_customized, k_customized)
+
+            q_pe = torch.cat([q_customized[..., :keep_dim], q_customized[..., 2 * keep_dim: 3 * keep_dim]], dim=-1)
+            k_pe = torch.cat([k_customized[..., :keep_dim], k_customized[..., 2 * keep_dim: 3 * keep_dim]], dim=-1)
+            return q_pe, k_pe
 
     def op_prepare(self, state):
         state.attn_intermediate_state = self.forward_prepare(
@@ -1008,7 +1046,6 @@ class DeepseekV2AttentionMLA(nn.Module):
         q_nope_out = q_nope_out.transpose(0, 1)
 
         k_pe = k_pe.view(-1, self.num_kv_heads, self.qk_rope_head_dim_per_head)
-        
         q_pe, k_pe = self.customized_rope(positions, q_pe, k_pe)
 
         return q_pe, k_pe, q_nope_out, k_nope, forward_batch, zero_allocator
@@ -1064,12 +1101,20 @@ class DeepseekV2AttentionMLA(nn.Module):
                 torch.bfloat16,
             )
         else:
-            assert self.w_vc.shape[0] == 1
-            w_vc_per_head = self.w_vc.view(self.w_vc.shape[1], self.num_kv_heads, -1)
-            w_vc_per_head = torch.repeat_interleave(w_vc_per_head, repeats= (self.num_local_heads // self.num_kv_heads), dim=-2)
-            attn_bmm_output = torch.einsum("l h d, b h l -> b h d", w_vc_per_head, attn_output)
-        attn_output = attn_bmm_output.reshape(attn_bmm_output.shape[0], -1)
-        output, _ = self.o_proj(attn_output)
+            if self.w_fused is not None:
+                pass
+            else:
+                assert self.w_vc.shape[0] == 1
+                w_vc_per_head = self.w_vc.view(self.w_vc.shape[1], self.num_kv_heads, -1)
+                w_vc_per_head = torch.repeat_interleave(w_vc_per_head, repeats= (self.num_local_heads // self.num_kv_heads), dim=-2)
+                attn_bmm_output = torch.einsum("l h d, b h l -> b h d", w_vc_per_head, attn_output)
+
+        if self.w_fused is not None:
+            output    = torch.mm(attn_output.flatten(1), self.w_fused.transpose(0, 1))   # (B, hidden)
+        else:
+            output = attn_bmm_output.view(attn_bmm_output.shape[0], -1)
+            output, _ = self.o_proj(output)
+
 
         return output
 
@@ -1874,6 +1919,7 @@ class DeepseekV2ForCausalLM(nn.Module):
                     self_attn.w_scale = self_attn.kv_b_proj.weight_scale
                     if _is_hip:
                         self_attn.w_scale *= 2.0
+                self_attn.w_fused = self._fuse_vc_o_proj_single_gpu(self_attn)
             else:
                 num_tiles_k = self_attn.qk_nope_head_dim // weight_block_size[1]
                 num_tiles_n = self_attn.v_head_dim // weight_block_size[0]

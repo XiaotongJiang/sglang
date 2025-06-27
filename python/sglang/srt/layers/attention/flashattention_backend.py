@@ -1096,27 +1096,16 @@ class FlashAttentionBackend(AttentionBackend):
         else:
             # Do absorbed multi-latent attention
             kv_cache = forward_batch.token_to_kv_pool.get_key_buffer(layer.layer_id)
-            k_rope = kv_cache[:, :, layer.v_head_dim :]
-            c_kv = kv_cache[:, :, : layer.v_head_dim]
-            k_rope_cache = k_rope.view(
-                -1,
-                self.page_size,
-                8,
-                32,
-            )
-
-            c_kv_cache = (
-                c_kv.view(-1, self.page_size, 1, layer.v_head_dim)
-                    .expand(-1, -1, 8, -1)
-            )
-
+            k_rope_cache = kv_cache[..., layer.v_head_dim:].view(-1, self.page_size, 8, 32)
+            c_kv_cache   = kv_cache[..., :layer.v_head_dim] \
+                            .view(-1, self.page_size, 1, layer.v_head_dim) \
+                            .expand(-1, -1, 8, -1)
 
             # Just for testing
             # k_nope_v_cache = kv_b_proj(c_kv)[0]
             # k_nope_cache = k_nope_v_cache[:, :, : layer.v_head_dim]
             # v_cache = k_nope_v_cache[:, :, layer.v_head_dim :]
             # Just for testing
-
 
             if q_rope is not None:
                 q_nope = q.view(-1, layer.tp_q_head_num, layer.v_head_dim)
