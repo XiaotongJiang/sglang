@@ -698,7 +698,7 @@ class DeepseekV2AttentionMLA(nn.Module):
         self.w_kc = None
         self.w_vc = None
         self.w_scale = None
-        self.w_fused = None
+        self.w_fused_T = None
 
         self.w_scale_k = None
         self.w_scale_v = None
@@ -786,37 +786,35 @@ class DeepseekV2AttentionMLA(nn.Module):
         # only need the rope part
         k_pe = k_pe.view(k_pe.shape[0], self.num_kv_heads, -1)
         if self.use_mla:
-            q_pe, k_pe = self.rotary_emb(positions, q_pe, k_pe)
+            q_pe, k_pe = self.rotary_emb.forward_cuda(positions, q_pe, k_pe)
             return q_pe, k_pe
         else:
             keep_dim = 16 # TODO: hardcode for now
-            rope_dim  = q_pe.size(-1) - keep_dim
-            pad_dim   = keep_dim + 3 * rope_dim  # padded width the rotary kernel needs
-            def _alloc_scratch(name, like, pad_dim):
+            def _alloc_scratch(name, like):
                 buf = getattr(self, name, None)
                 if buf is None or buf.size(0) < like.size(0):
                     buf = torch.empty(
-                        like.size(0), like.size(1), pad_dim,
+                        like.size(0), like.size(1), like.size(2) * 2,
                         dtype=like.dtype, device=like.device
                     )
                     setattr(self, name, buf)
                 return buf[:like.size(0)]
 
-            q_pad = _alloc_scratch('_rope_q_buf', q_pe, pad_dim)
-            k_pad = _alloc_scratch('_rope_k_buf', k_pe, pad_dim)
+            q_pad = _alloc_scratch('_rope_q_buf', q_pe)
+            k_pad = _alloc_scratch('_rope_k_buf', k_pe)
 
             q_pad[..., :keep_dim]                        = q_pe[..., :keep_dim]
-            q_pad[..., keep_dim + rope_dim : keep_dim + 2*rope_dim] = q_pe[..., keep_dim:]
+            q_pad[..., 2*keep_dim : 3*keep_dim] = q_pe[..., keep_dim:]
 
             k_pad[..., :keep_dim]                        = k_pe[..., :keep_dim]
-            k_pad[..., keep_dim + rope_dim : keep_dim + 2*rope_dim] = k_pe[..., keep_dim:]
-            q_rot, k_rot = self.rotary_emb(positions, q_pad, k_pad)
+            k_pad[..., keep_dim + keep_dim : keep_dim + 2*keep_dim] = k_pe[..., keep_dim:]
+            q_rot, k_rot = self.rotary_emb.forward_cuda(positions, q_pad, k_pad)
 
             q_pe[..., :keep_dim] = q_rot[..., :keep_dim]
-            q_pe[..., keep_dim:] = q_rot[..., keep_dim + 2*rope_dim : keep_dim + 3*rope_dim]
+            q_pe[..., keep_dim:] = q_rot[..., 2*keep_dim : 3*keep_dim]
 
             k_pe[..., :keep_dim] = k_rot[..., :keep_dim]
-            k_pe[..., keep_dim:] = k_rot[..., keep_dim + 2*rope_dim : keep_dim + 3*rope_dim]
+            k_pe[..., keep_dim:] = k_rot[..., 2*keep_dim : 3*keep_dim]
 
             return q_pe, k_pe
 
@@ -997,17 +995,32 @@ class DeepseekV2AttentionMLA(nn.Module):
             #     -1, self.num_local_heads, self.qk_head_dim_per_head
             # )
             all_q = self.q_proj(hidden_states)[0]
-            all_q_nope, all_q_pe = all_q.split([self.num_local_heads * self.qk_nope_head_dim_per_head, self.num_local_heads * self.qk_rope_head_dim_per_head], dim=-1)
-            all_q_nope = all_q_nope.view(-1, self.num_local_heads, self.qk_nope_head_dim_per_head)
-            all_q_pe = all_q_pe.view(-1, self.num_local_heads, self.qk_rope_head_dim_per_head)
-            q = torch.cat([all_q_nope, all_q_pe], dim=-1)
+            q_nope, q_pe = all_q.split(
+                [self.num_local_heads * self.qk_nope_head_dim_per_head,
+                self.num_local_heads * self.qk_rope_head_dim_per_head],
+                dim=-1
+            )
+            q_nope = q_nope.view(-1, self.num_local_heads, self.qk_nope_head_dim_per_head)
+            q_pe   = q_pe  .view(-1, self.num_local_heads, self.qk_rope_head_dim_per_head)           
+            # all_q = self.q_proj(hidden_states)[0]
+            # all_q_nope, all_q_pe = all_q.split([self.num_local_heads * self.qk_nope_head_dim_per_head, self.num_local_heads * self.qk_rope_head_dim_per_head], dim=-1)
+            # all_q_nope = all_q_nope.view(-1, self.num_local_heads, self.qk_nope_head_dim_per_head)
+            # all_q_pe = all_q_pe.view(-1, self.num_local_heads, self.qk_rope_head_dim_per_head)
+            # q = torch.cat([all_q_nope, all_q_pe], dim=-1)
             latent_cache = self.kv_a_proj_with_mqa(hidden_states)[0]
-            k_nope = latent_cache[..., : self.kv_lora_rank]
+            k_nope, k_pe = latent_cache.split(
+                [self.kv_lora_rank,
+                self.kv_lora_rank],
+                dim=-1
+            )
             k_nope = k_nope.unsqueeze(1)
             # k_nope = self.kv_a_layernorm(k_nope).unsqueeze(1)
-        q_nope, q_pe = q.split([self.qk_nope_head_dim_per_head, self.qk_rope_head_dim_per_head], dim=-1)
-        k_pe = latent_cache[..., self.kv_lora_rank :].unsqueeze(1)
-
+        # q_nope, q_pe = q.split([self.qk_nope_head_dim_per_head, self.qk_rope_head_dim_per_head], dim=-1)
+        if k_pe is None:
+            k_pe = latent_cache[..., self.kv_lora_rank :].unsqueeze(1)
+        else:
+            k_pe = k_pe.unsqueeze(1)
+        
         if self.use_deep_gemm_bmm:
             q_nope_val, q_nope_scale, masked_m, expected_m, aligned_m = (
                 per_token_group_quant_mla_deep_gemm_masked_fp8(q_nope.transpose(0, 1))
@@ -1038,17 +1051,17 @@ class DeepseekV2AttentionMLA(nn.Module):
                 q_nope_val, self.w_kc, q_nope_scale, self.w_scale, torch.bfloat16
             )
         else:
-            # TODO: check if this is correct, 1. whether w_kc's input and output need to be transposed
-            w_kc_per_head = self.w_kc.view(self.num_kv_heads, -1, self.w_kc.shape[1])
-            n_gqa_group = self.num_local_heads // self.num_kv_heads
-            q_nope_out = torch.bmm(q_nope.transpose(0, 1), torch.repeat_interleave(w_kc_per_head, repeats=n_gqa_group, dim=0))
+            # w_kc_per_head = self.w_kc.view(self.num_kv_heads, -1, self.w_kc.shape[1])
+            # n_gqa_group = self.num_local_heads // self.num_kv_heads
+            # q_nope_out = torch.bmm(q_nope.transpose(0, 1), self.w_kc)
+            q_nope = torch.einsum('bhd,hdr->bhr', q_nope, self.w_kc)
 
-        q_nope_out = q_nope_out.transpose(0, 1)
+        # q_nope_out = q_nope_out.transpose(0, 1)
 
         k_pe = k_pe.view(-1, self.num_kv_heads, self.qk_rope_head_dim_per_head)
         q_pe, k_pe = self.customized_rope(positions, q_pe, k_pe)
 
-        return q_pe, k_pe, q_nope_out, k_nope, forward_batch, zero_allocator
+        return q_pe, k_pe, q_nope, k_nope, forward_batch, zero_allocator
 
     def forward_absorb_core(
         self, q_pe, k_pe, q_nope_out, k_nope, forward_batch, zero_allocator
@@ -1101,7 +1114,7 @@ class DeepseekV2AttentionMLA(nn.Module):
                 torch.bfloat16,
             )
         else:
-            if self.w_fused is not None:
+            if self.w_fused_T is not None:
                 pass
             else:
                 assert self.w_vc.shape[0] == 1
@@ -1109,8 +1122,8 @@ class DeepseekV2AttentionMLA(nn.Module):
                 w_vc_per_head = torch.repeat_interleave(w_vc_per_head, repeats= (self.num_local_heads // self.num_kv_heads), dim=-2)
                 attn_bmm_output = torch.einsum("l h d, b h l -> b h d", w_vc_per_head, attn_output)
 
-        if self.w_fused is not None:
-            output    = torch.mm(attn_output.flatten(1), self.w_fused.transpose(0, 1))   # (B, hidden)
+        if self.w_fused_T is not None:
+            output    = torch.mm(attn_output.flatten(1), self.w_fused_T)   # (B, hidden)
         else:
             output = attn_bmm_output.view(attn_bmm_output.shape[0], -1)
             output, _ = self.o_proj(output)
@@ -1919,7 +1932,6 @@ class DeepseekV2ForCausalLM(nn.Module):
                     self_attn.w_scale = self_attn.kv_b_proj.weight_scale
                     if _is_hip:
                         self_attn.w_scale *= 2.0
-                self_attn.w_fused = self._fuse_vc_o_proj_single_gpu(self_attn)
             else:
                 num_tiles_k = self_attn.qk_nope_head_dim // weight_block_size[1]
                 num_tiles_n = self_attn.v_head_dim // weight_block_size[0]

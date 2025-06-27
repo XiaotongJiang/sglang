@@ -682,7 +682,11 @@ class LlamaForCausalLMMLA(nn.Module):
                 0, (-1, self_attn.qk_nope_head_dim + self_attn.v_head_dim * self_attn.num_kv_heads)
             ).split([self_attn.qk_nope_head_dim, self_attn.v_head_dim * self_attn.num_kv_heads], dim=1)
             if not use_deep_gemm_bmm:
-                self_attn.w_kc = w_kc.transpose(1, 2).contiguous().transpose(1, 2)
+                w_kc = w_kc.transpose(1, 2).contiguous().transpose(1, 2)
+                w_kc_per_head = w_kc.view(self_attn.num_kv_heads, -1, w_kc.shape[1])
+                n_gqa_group = self_attn.num_local_heads // self_attn.num_kv_heads
+                w_kc_per_head = torch.repeat_interleave(w_kc_per_head, repeats=n_gqa_group, dim=0)
+                self_attn.w_kc = w_kc_per_head.transpose(1, 2).contiguous().transpose(1, 2)
                 self_attn.w_vc = w_vc.contiguous().transpose(1, 2)
                 if (
                     hasattr(self_attn.kv_b_proj, "weight_scale")
@@ -691,7 +695,7 @@ class LlamaForCausalLMMLA(nn.Module):
                     self_attn.w_scale = self_attn.kv_b_proj.weight_scale
                     if _is_hip:
                         self_attn.w_scale *= 2.0
-                # self_attn.w_fused = self._fuse_vc_o_proj_single_gpu(self_attn)
+                # self._fuse_vc_o_proj_single_gpu(self_attn)
             else:
                 num_tiles_k = self_attn.qk_nope_head_dim // weight_block_size[1]
                 num_tiles_n = self_attn.v_head_dim // weight_block_size[0]
@@ -732,8 +736,8 @@ class LlamaForCausalLMMLA(nn.Module):
         # einsum : (o h d , h d l) -> (o h l)
         W_fused = torch.einsum('ohd,lhd->ohl', W_o, w_vc_per_head) \
                         .reshape(H_out, H_local * L)
-
-        return W_fused
+        W_fused_T = W_fused.transpose(0, 1)
+        self_attn.W_fused_T = W_fused_T
 
     def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]):
         stacked_params_mapping = [
