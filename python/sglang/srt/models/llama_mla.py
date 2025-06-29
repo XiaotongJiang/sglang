@@ -1181,7 +1181,7 @@ class LlamaAttentionMLA(nn.Module):
             else:
                 return _dispatch_mla_subtype()
 
-    def customized_rope(self, positions, q_pe, k_pe):
+    def customized_rope(self, positions, q_pe, k_pe, forward_batch):
         # This is a customized rope function for gqa to mla
         # We modify the q_pe and k_pe to include the non rope part
         # then do the rope operation
@@ -1189,8 +1189,10 @@ class LlamaAttentionMLA(nn.Module):
         # only need the rope part
         k_pe = k_pe.view(k_pe.shape[0], self.num_kv_heads, -1)
         if self.use_mla:
-            q_pe, k_pe = self.rotary_emb.forward_cuda(positions, q_pe, k_pe)
-            return q_pe, k_pe
+            if forward_batch.forward_mode.is_extend():
+                return self.rotary_emb.forward(positions, q_pe, k_pe) # TODO: figure out why extend kernal and non kernel are different
+            else:
+                return self.rotary_emb.forward_cuda(positions, q_pe, k_pe)
         else:
             keep_dim = 16 # TODO: hardcode for now
             def _alloc_scratch(name, like):
@@ -1345,7 +1347,7 @@ class LlamaAttentionMLA(nn.Module):
         k_nope = kv[..., : self.kv_lora_rank].view(-1, self.num_kv_heads, self.qk_nope_head_dim_per_head)
         v = kv[..., self.kv_lora_rank :].view(-1, self.num_kv_heads, self.v_head_dim)
         k_pe = latent_cache[:, :, self.kv_lora_rank :]
-        q_pe, k_pe = self.customized_rope(positions, q_pe, k_pe)
+        q_pe, k_pe = self.customized_rope(positions, q_pe, k_pe, forward_batch)
         q[..., self.qk_nope_head_dim_per_head :] = q_pe
         k = torch.empty((q.shape[0], self.num_kv_heads, q.shape[2]), device=q.device, dtype=q.dtype)
         k[..., : self.qk_nope_head_dim_per_head] = k_nope
@@ -1462,7 +1464,7 @@ class LlamaAttentionMLA(nn.Module):
         # q_nope_out = q_nope_out.transpose(0, 1)
 
         k_pe = k_pe.view(-1, self.num_kv_heads, self.qk_rope_head_dim_per_head)
-        q_pe, k_pe = self.customized_rope(positions, q_pe, k_pe)
+        q_pe, k_pe = self.customized_rope(positions, q_pe, k_pe, forward_batch)
 
         return q_pe, k_pe, q_nope, k_nope, forward_batch, zero_allocator
 
