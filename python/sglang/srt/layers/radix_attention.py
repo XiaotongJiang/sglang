@@ -55,6 +55,7 @@ class RadixAttention(nn.Module):
         attn_type=AttentionType.DECODER,
         prefix: str = "",
         use_irope: bool = False,
+        is_llamamla: bool = False,
     ):
         super().__init__()
         self.tp_q_head_num = num_heads
@@ -79,6 +80,7 @@ class RadixAttention(nn.Module):
         if self.quant_method is not None:
             self.quant_method.create_weights(self)
         self.attn_type = attn_type
+        self.is_llamamla = is_llamamla
 
     def forward(
         self,
@@ -99,6 +101,9 @@ class RadixAttention(nn.Module):
             else:
                 batch_size = k.shape[0]
                 # k = k.view(batch_size, self.tp_k_head_num, -1)
+
+        if "is_llamamla" not in kwargs and self.is_llamamla:
+            kwargs["is_llamamla"] = self.is_llamamla
 
         return forward_batch.attn_backend.forward(
             q,
