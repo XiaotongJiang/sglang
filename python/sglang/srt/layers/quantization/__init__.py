@@ -56,6 +56,7 @@ from sglang.srt.layers.quantization.modelopt_quant import (
 )
 from sglang.srt.layers.quantization.moe_wna16 import MoeWNA16Config
 from sglang.srt.layers.quantization.mxfp4 import Mxfp4Config
+from sglang.srt.layers.quantization.mxfp4_fp8_hybrid import Mxfp4Fp8HybridConfig
 from sglang.srt.layers.quantization.petit import PetitNvFp4Config
 from sglang.srt.layers.quantization.qoq import QoQConfig
 from sglang.srt.layers.quantization.w4afp8 import W4AFp8Config
@@ -94,6 +95,7 @@ if is_cuda():
         {
             "quark": Mxfp4Config,
             "mxfp4": Mxfp4Config,
+            "mxfp4_fp8_hybrid": Mxfp4Fp8HybridConfig,
         }
     )
 elif _is_mxfp_supported and is_hip():
