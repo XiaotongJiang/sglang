@@ -613,18 +613,12 @@ class ModelConfig:
                     or quant_method
                     not in compatible_quantization_methods[self.quantization]
                 ):
-                    logger.warning(
+                    raise ValueError(
                         "Quantization method specified in the model config "
                         f"({quant_method}) does not match the quantization "
                         f"method specified in the `quantization` argument "
                         f"({self.quantization})."
                     )
-                    # raise ValueError(
-                    #     "Quantization method specified in the model config "
-                    #     f"({quant_method}) does not match the quantization "
-                    #     f"method specified in the `quantization` argument "
-                    #     f"({self.quantization})."
-                    # )
 
         if self.quantization is not None:
             if self.quantization not in supported_quantization:
