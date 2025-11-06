@@ -180,7 +180,7 @@ class FusedMoE(torch.nn.Module):
         # TODO maybe we should remove this `if`, since `Mxfp4MoEMethod` does another round-up logic
         if (
             self.quant_config is not None
-            and self.quant_config.get_name() == "mxfp4"
+            and self.quant_config.get_name() in ("mxfp4", "mxfp4_fp8_hybrid")
             and self.use_flashinfer_mxfp4_moe
         ):
             hidden_size = round_up(hidden_size, 256)
@@ -477,7 +477,7 @@ class FusedMoE(torch.nn.Module):
         if (
             not expert_id
             and self.quant_config is not None
-            and self.quant_config.get_name() == "mxfp4"
+            and self.quant_config.get_name() in ("mxfp4", "mxfp4_fp8_hybrid")
             and self.quant_config.is_static_cfg()
         ):
             if "bias" in weight_name:
@@ -739,7 +739,7 @@ class FusedMoE(torch.nn.Module):
 
         if (
             self.quant_config is not None
-            and self.quant_config.get_name() == "mxfp4"
+            and self.quant_config.get_name() in ("mxfp4", "mxfp4_fp8_hybrid")
             and self.quant_config.is_static_cfg()
         ):
             if "bias" in weight_name:

@@ -134,7 +134,7 @@ class GptOssSparseMoeBlock(nn.Module):
             extra_kwargs = {
                 # for moe gate_up_proj and down_proj and their bias loading
                 "use_weight_loader_fused": quant_config_name
-                != "mxfp4"
+                not in ("mxfp4", "mxfp4_fp8_hybrid")
             }
         self.experts = experts_type(
             num_experts=config.num_local_experts
@@ -725,7 +725,9 @@ class GptOssForCausalLM(nn.Module):
         quant_config_name = (
             self.quant_config.get_name() if self.quant_config is not None else None
         )
-        if quant_config_name != "mxfp4":
+        # Check if quantization uses MXFP4 (including hybrid variants)
+        uses_mxfp4 = quant_config_name in ("mxfp4", "mxfp4_fp8_hybrid")
+        if not uses_mxfp4:
             self._load_normal_weights(
                 weights, is_nextn=is_nextn, weight_name_mapping=weight_name_mapping
             )
@@ -742,7 +744,7 @@ class GptOssForCausalLM(nn.Module):
             if (
                 ".experts" in name
                 and self.quant_config is not None
-                and self.quant_config.get_name() == "mxfp4"
+                and self.quant_config.get_name() in ("mxfp4", "mxfp4_fp8_hybrid")
             ):
                 mxfp4_weights.append((name, weight))
             else:

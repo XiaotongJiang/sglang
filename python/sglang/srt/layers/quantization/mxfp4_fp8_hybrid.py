@@ -21,13 +21,13 @@ from typing import Any, Dict, List, Optional
 import torch
 
 from sglang.srt.layers.quantization.base_config import QuantizationConfig, QuantizeMethodBase
-from sglang.srt.layers.quantization.fp8 import Fp8LinearMethod
 from sglang.srt.layers.quantization.kv_cache import BaseKVCacheMethod
 from sglang.srt.layers.quantization.mxfp4 import (
     Mxfp4Config,
     Mxfp4MoEMethod,
     Mxfp4DynamicQuantMoEMethod,
 )
+from sglang.srt.layers.quantization.fp8 import Fp8LinearMethod
 from sglang.srt.layers.quantization.utils import is_layer_skipped
 from sglang.srt.utils import is_hip, log_info_on_rank0
 
@@ -59,16 +59,6 @@ class Mxfp4Fp8HybridConfig(QuantizationConfig):
         self.is_checkpoint_mxfp4_serialized = is_checkpoint_mxfp4_serialized
         self.activation_scheme = activation_scheme
         self.ignored_layers = ignored_layers or []
-        
-        # Don't expose kv_cache_quant_algo - let user explicitly set --kv-cache-dtype
-        # This ensures FP8 KV cache is only used when explicitly requested
-        self.kv_cache_quant_algo = None
-        
-        log_info_on_rank0(
-            logger,
-            f"Hybrid quantization config: MXFP4 for MoE, bf16 for attention. "
-            f"Use --kv-cache-dtype fp8_e4m3 to enable FP8 KV cache.",
-        )
 
     @classmethod
     def get_name(cls) -> str:
@@ -117,16 +107,12 @@ class Mxfp4Fp8HybridConfig(QuantizationConfig):
         """
         # Check if the model has mxfp4 quantization
         quant_method = hf_quant_cfg.get("quant_method", "").lower()
-        is_mxfp4_checkpoint = "mxfp4" in quant_method or "quark" in quant_method
+        is_mxfp4_checkpoint = "mxfp4" in quant_method
         
         # Check if user wants hybrid quantization
         is_hybrid_requested = user_quant == "mxfp4_fp8_hybrid"
         
         if is_mxfp4_checkpoint and is_hybrid_requested:
-            log_info_on_rank0(
-                logger,
-                "Model has MXFP4 MoE layers. Using hybrid MXFP4+FP8 quantization as requested."
-            )
             return cls.get_name()
         
         return None
@@ -145,39 +131,25 @@ class Mxfp4Fp8HybridConfig(QuantizationConfig):
         """
         from sglang.srt.layers.linear import LinearBase
         from sglang.srt.layers.moe.fused_moe_triton import FusedMoE
-        from sglang.srt.layers.radix_attention import RadixAttention
+        from sglang.srt.layers.quantization.unquant import UnquantizedLinearMethod
 
-        # Handle MoE layers - keep in MXFP4
-        if isinstance(layer, FusedMoE):
+        if isinstance(layer, LinearBase):
+            if self.ignored_layers and is_layer_skipped(
+                prefix=prefix,
+                ignored_layers=self.ignored_layers,
+                fused_mapping=self.packed_modules_mapping,
+            ):
+                return UnquantizedLinearMethod()
+            return Fp8LinearMethod(self)
+        elif isinstance(layer, FusedMoE):
             if self.is_checkpoint_mxfp4_serialized:
-                log_info_on_rank0(logger, f"Using MXFP4 for MoE layer: {prefix}")
                 return Mxfp4MoEMethod(prefix=prefix)
             else:
                 return Mxfp4DynamicQuantMoEMethod()
-
-        # Handle Linear layers - DON'T quantize weights
-        # The model doesn't have pre-quantized FP8 weights, and online
-        # weight quantization can cause dtype mismatches
-        if isinstance(layer, LinearBase):
-            # Return None to use default bf16 weights
-            return None
-
-        # Don't return a KV cache quantization method here
-        # Let the user explicitly set --kv-cache-dtype fp8_e4m3 if they want FP8 KV cache
-        # The model runner will handle it based on the --kv-cache-dtype flag
+        else:
+            if self.is_checkpoint_mxfp4_serialized:
+                raise NotImplementedError("Mxfp4 attention layer is not implemented")
         return None
 
     def get_scaled_act_names(self) -> List[str]:
         return []
-
-
-class HybridFp8KVCacheMethod(BaseKVCacheMethod):
-    """
-    KV cache method that applies FP8 quantization to key and value caches.
-    Used in hybrid config for FP8 KV cache with MXFP4 MoE.
-    """
-
-    def __init__(self, quant_config: Mxfp4Fp8HybridConfig):
-        super().__init__(quant_config)
-
-
