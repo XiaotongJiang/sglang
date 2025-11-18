@@ -54,11 +54,15 @@ class Mxfp4Fp8HybridConfig(QuantizationConfig):
         is_checkpoint_mxfp4_serialized: bool = False,
         activation_scheme: str = "dynamic",
         ignored_layers: Optional[List[str]] = None,
+        weight_block_size: List[int] = None,
+        is_checkpoint_fp8_serialized: bool = False,
     ):
         super().__init__()
         self.is_checkpoint_mxfp4_serialized = is_checkpoint_mxfp4_serialized
         self.activation_scheme = activation_scheme
         self.ignored_layers = ignored_layers or []
+        self.weight_block_size = weight_block_size
+        self.is_checkpoint_fp8_serialized = is_checkpoint_fp8_serialized
 
     @classmethod
     def get_name(cls) -> str:
@@ -127,12 +131,11 @@ class Mxfp4Fp8HybridConfig(QuantizationConfig):
         Returns the appropriate quantization method for each layer type:
         - LinearBase: None (keep in bf16, no weight quantization)
         - FusedMoE: Mxfp4MoEMethod (from checkpoint)
-        - RadixAttention: Fp8KVCacheMethod (for FP8 KV cache only)
+        - RadixAttention: Fp8LinearMethod (for FP8 KV cache only)
         """
         from sglang.srt.layers.linear import LinearBase
         from sglang.srt.layers.moe.fused_moe_triton import FusedMoE
         from sglang.srt.layers.quantization.unquant import UnquantizedLinearMethod
-
         if isinstance(layer, LinearBase):
             if self.ignored_layers and is_layer_skipped(
                 prefix=prefix,
@@ -146,9 +149,6 @@ class Mxfp4Fp8HybridConfig(QuantizationConfig):
                 return Mxfp4MoEMethod(prefix=prefix)
             else:
                 return Mxfp4DynamicQuantMoEMethod()
-        else:
-            if self.is_checkpoint_mxfp4_serialized:
-                raise NotImplementedError("Mxfp4 attention layer is not implemented")
         return None
 
     def get_scaled_act_names(self) -> List[str]:

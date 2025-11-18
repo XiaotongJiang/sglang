@@ -64,7 +64,10 @@ from sglang.srt.layers.vocab_parallel_embedding import (
     VocabParallelEmbedding,
 )
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch, PPProxyTensors
-from sglang.srt.model_loader.weight_utils import default_weight_loader
+from sglang.srt.model_loader.weight_utils import (
+    default_weight_loader,
+    kv_cache_scales_loader,
+)
 from sglang.srt.models.utils import (
     create_fused_set_kv_buffer_arg,
     enable_fused_set_kv_buffer,
@@ -293,6 +296,7 @@ class GptOssAttention(nn.Module):
             self.scaling,
             num_kv_heads=self.num_kv_heads,
             layer_id=layer_id,
+            quant_config = quant_config,
             prefix=add_prefix("attn", prefix),
             sliding_window_size=(sliding_window_size if use_sliding_window else -1),
         )
@@ -308,7 +312,6 @@ class GptOssAttention(nn.Module):
             return hidden_states, forward_batch, None
         qkv, _ = self.qkv_proj(hidden_states)
         q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
-
         q, k = self.rotary_emb(
             positions,
             q,
@@ -488,6 +491,7 @@ class GptOssModel(nn.Module):
         decoder_layer_type: type[nn.Module] = GptOssDecoderLayer,
     ) -> None:
         super().__init__()
+        self.config = config
         self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
         self.pp_group = get_pp_group()
@@ -569,6 +573,33 @@ class GptOssModel(nn.Module):
 
         return hidden_states, aux_hidden_states
 
+    # If this function is called, it should always initialize KV cache scale
+    # factors (or else raise an exception). Thus, handled exceptions should
+    # make sure to leave KV cache scale factors in a known good (dummy) state
+    def load_kv_cache_scales(self, quantization_param_path: str) -> None:
+        tp_size = get_tensor_model_parallel_world_size()
+        tp_rank = get_tensor_model_parallel_rank()
+        for layer_idx, scaling_factor in kv_cache_scales_loader(
+            quantization_param_path,
+            tp_rank,
+            tp_size,
+            self.config.num_hidden_layers,
+            self.config.__class__.model_type,
+        ):
+            if not isinstance(self.layers[layer_idx], nn.Identity):
+                layer_self_attn = self.layers[layer_idx].self_attn
+
+            if hasattr(layer_self_attn.attn, "k_scale"):
+                layer_self_attn.attn.k_scale = torch.nn.Parameter(
+                    torch.tensor(scaling_factor, dtype=torch.float32, device="cuda"), requires_grad=False
+                )
+                layer_self_attn.attn.v_scale = torch.nn.Parameter(
+                    torch.tensor(scaling_factor, dtype=torch.float32, device="cuda"), requires_grad=False
+                )
+            else:
+                raise RuntimeError(
+                    "Self attention has no KV cache scaling " "factor attribute!"
+                )
 
 class GptOssForCausalLM(nn.Module):
     fall_back_to_pt_during_load = False
@@ -1098,6 +1129,9 @@ class GptOssForCausalLM(nn.Module):
         self.lm_head.weight = head
         torch.cuda.empty_cache()
         torch.cuda.synchronize()
+
+    def load_kv_cache_scales(self, quantization_param_path: str) -> None:
+        self.model.load_kv_cache_scales(quantization_param_path)
 
     def set_eagle3_layers_to_capture(self, layer_ids: Optional[List[int]] = None):
         if not self.pp_group.is_last_rank:
