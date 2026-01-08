@@ -440,14 +440,8 @@ class FusedMoE(torch.nn.Module):
         ):
             raise ValueError("expert_data and loaded_weight must be torch.Tensor")
 
-        if (
-            self.quant_config is not None
-            and "modelopt" in self.quant_config.get_name()
-            and (expert_data.dim() != 2 or loaded_weight.dim() != 2)
-        ):
-            raise ValueError(
-                f"Expected 2D tensors, got expert_data shape {expert_data.shape} and loaded_weight shape {loaded_weight.shape}"
-            )
+        # Note: 3D tensors [num_experts, dim1, dim2] are valid for fused MoE weights.
+        # The original 2D check was too restrictive for FP4 MoE checkpoints.
 
         if shard_id != "w2":
             raise ValueError(f"shard_id must be 'w2', got {shard_id}")

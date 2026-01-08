@@ -1510,10 +1510,9 @@ class ModelOptNvFp4FusedMoEMethod(FusedMoEMethodBase):
                     weight_scale.shape[-1] == expected_blocks[name]
                 ), f"Expected {name}_weight_scale.dim(2) == {expected_blocks[name]}, got {weight_scale.shape[-1]}"
             else:
-                # For other backends, ensure the per-input block dimension is aligned to 16.
-                assert (
-                    weight_scale.shape[assert_dim] % block_size == 0
-                ), f"Expected {name}_weight_scale.dim({assert_dim}) to be divisible by {block_size}"
+                # For CUTLASS backend, swizzle_blockscale internally pads scales
+                # to multiples of 4 for K and 128 for M, so no strict alignment required
+                pass
             assert (
                 weight_scale.dtype == torch.float8_e4m3fn
             ), f"{name} Weight Blockscale must be represented as FP8-E4M3"
@@ -1578,29 +1577,35 @@ class ModelOptNvFp4FusedMoEMethod(FusedMoEMethodBase):
 
             w13_weight = layer.w13_weight
             intermediate_size_pad = w13_blockscale_swizzled.size(1) - w13_weight.size(1)
-            if intermediate_size_pad:
-                # padding gated activations will require to split w1 and w3
-                # and pad them individually
-                assert not layer.moe_runner_config.is_gated, (
-                    "The intermediate size required padding, "
-                    "but padding is also implemented for gated activations"
-                )
-
+            if intermediate_size_pad > 0:
+                # For gated activations (SwiGLU etc.), w13 dim 1 = 2 * intermediate_size
+                # but w2 input dim = intermediate_size (half of w13 output).
+                # So w2's padding divisor needs an extra factor of 2 for gated.
+                is_gated = layer.moe_runner_config.is_gated
+                
+                # Pad w13 weight (gate_up fused)
                 layer.w13_weight = Parameter(
                     torch.nn.functional.pad(
                         w13_weight, (0, 0, 0, intermediate_size_pad)
                     ),
                     requires_grad=False,
                 )
+                
+                # For w2: intermediate_size_pad is on 2*intermediate (for gated)
+                # w2 input is intermediate (half), and packed (another half)
+                # So divisor is 2 (packed) * 2 (gated) = 4 for gated, or 2 for non-gated
+                w2_weight_pad_divisor = 4 if is_gated else 2
+                w2_scale_pad_divisor = 32 if is_gated else 16
+                
                 layer.w2_weight = Parameter(
                     torch.nn.functional.pad(
-                        layer.w2_weight, (0, intermediate_size_pad // 2, 0, 0)
+                        layer.w2_weight, (0, intermediate_size_pad // w2_weight_pad_divisor, 0, 0)
                     ),
                     requires_grad=False,
                 )
                 layer.w2_weight_scale = Parameter(
                     torch.nn.functional.pad(
-                        layer.w2_weight_scale, (0, intermediate_size_pad // 16)
+                        layer.w2_weight_scale, (0, intermediate_size_pad // w2_scale_pad_divisor)
                     ),
                     requires_grad=False,
                 )

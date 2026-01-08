@@ -171,7 +171,12 @@ class QuantizationConfig(ABC):
             return None
 
         # Check if this is a ModelOpt config
-        quant_algo = hf_quant_config.get("quant_algo", "").upper()
+        # Try top-level first, then nested under "quantization"
+        quant_algo = hf_quant_config.get("quant_algo", "")
+        if not quant_algo:
+            quant_section = hf_quant_config.get("quantization", {})
+            quant_algo = quant_section.get("quant_algo", "")
+        quant_algo = quant_algo.upper()
 
         # If user specified generic "modelopt", auto-detect the specific method
         if user_quant == "modelopt":
