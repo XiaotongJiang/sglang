@@ -1529,6 +1529,8 @@ class ModelOptNvFp4FusedMoEMethod(FusedMoEMethodBase):
                 gemm1_scales_fp4_shuffled,
                 gemm2_weights_fp4_shuffled,
                 gemm2_scales_fp4_shuffled,
+                _,  # hidden_size (unchanged)
+                _,  # intermediate_size (unchanged)
             ) = prepare_static_weights_for_trtllm_fp4_moe(
                 layer.w13_weight,
                 layer.w2_weight,
@@ -1675,6 +1677,30 @@ class ModelOptNvFp4FusedMoEMethod(FusedMoEMethodBase):
             topk_weights, topk_ids = topk_output.topk_weights, topk_output.topk_ids
 
             output_dtype = torch.bfloat16
+
+            # If x_sf is None, quantize activation to FP4 for A4W4 mode
+            if x_sf is None and fp4_quantize is not None:
+                # Quantize BF16 activation to FP4
+                # Note: fp4_quantize is either flashinfer.fp4_quantize or sgl_kernel.scaled_fp4_quant
+                # They have different APIs:
+                # - flashinfer.fp4_quantize: (x, scale, sf_vec_size, use_ue8m0, is_sf_swizzled_layout) -> non-interleaved
+                # - sgl_kernel.scaled_fp4_quant: (input, input_global_scale) -> already interleaved
+                if is_sm120_supported():
+                    # flashinfer.fp4_quantize API
+                    from flashinfer import nvfp4_block_scale_interleave
+
+                    x_fp4, x_sf_raw = fp4_quantize(
+                        x,
+                        layer.w13_input_scale_quant,
+                        16,  # sf_vec_size
+                        False,  # use_ue8m0
+                        False,  # is_sf_swizzled_layout
+                    )
+                    x = x_fp4
+                    x_sf = nvfp4_block_scale_interleave(x_sf_raw)
+                else:
+                    # sgl_kernel.scaled_fp4_quant API - scale is already interleaved
+                    x, x_sf = fp4_quantize(x, layer.w13_input_scale_quant)
 
             # If x_sf is not None, x is FP4 packed (half size), so we need * 2
             # If x_sf is None, x is not packed, so output_col = x.shape[1]

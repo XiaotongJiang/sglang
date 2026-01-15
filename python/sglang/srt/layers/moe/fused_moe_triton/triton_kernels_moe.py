@@ -302,7 +302,6 @@ def triton_kernel_fused_experts_with_bias(
         gammas=routing_data.gate_scal if apply_router_weight_on_input else None,
         fused_activation=act,
     )
-
     return matmul_ogs(
         intermediate_cache,
         w2,

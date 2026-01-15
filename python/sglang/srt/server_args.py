@@ -444,7 +444,7 @@ class ServerArgs:
     ep_size: int = 1
     moe_a2a_backend: Literal["none", "deepep", "mooncake", "ascend_fuseep"] = "none"
     moe_runner_backend: str = "auto"
-    flashinfer_mxfp4_moe_precision: Literal["default", "bf16"] = "default"
+    flashinfer_mxfp4_moe_precision: Literal["default", "bf16", "fp4"] = "default"
     enable_flashinfer_allreduce_fusion: bool = False
     deepep_mode: Literal["auto", "normal", "low_latency"] = "auto"
     ep_num_redundant_experts: int = 0
@@ -1874,8 +1874,9 @@ class ServerArgs:
             assert self.quantization in [
                 "modelopt_fp4",
                 "modelopt_fp8",
+                "mxfp4",  # GPT-OSS - weights will be dequantized to BF16
                 None,
-            ], f"Invalid quantization '{self.quantization}'. \nFlashInfer Cutlass MOE supports only: 'modelopt_fp4', 'modelopt_fp8', or bfloat16 (None)."
+            ], f"Invalid quantization '{self.quantization}'. \nFlashInfer Cutlass MOE supports only: 'modelopt_fp4', 'modelopt_fp8', 'mxfp4', or bfloat16 (None)."
             assert self.ep_size in [
                 1,
                 self.tp_size,
@@ -3602,9 +3603,9 @@ class ServerArgs:
         parser.add_argument(
             "--flashinfer-mxfp4-moe-precision",
             type=str,
-            choices=["default", "bf16"],
+            choices=["default", "bf16", "fp4"],
             default=ServerArgs.flashinfer_mxfp4_moe_precision,
-            help="Choose the computation precision of flashinfer mxfp4 moe",
+            help="Choose the computation precision of flashinfer mxfp4 moe. 'default'=W4A8, 'bf16'=W4A16, 'fp4'=W4A4",
         )
         parser.add_argument(
             "--enable-flashinfer-allreduce-fusion",

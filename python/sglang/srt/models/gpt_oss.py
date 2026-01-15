@@ -54,6 +54,7 @@ from sglang.srt.layers.moe import get_moe_a2a_backend
 from sglang.srt.layers.moe.ep_moe.layer import get_moe_impl_class
 from sglang.srt.layers.moe.fused_moe_triton.layer import FusedMoE
 from sglang.srt.layers.moe.topk import TopK
+from sglang.srt.layers.moe.utils import RoutingMethodType
 from sglang.srt.layers.quantization.base_config import QuantizationConfig
 from sglang.srt.layers.quantization.fp8_utils import dequant_mxfp4
 from sglang.srt.layers.radix_attention import RadixAttention
@@ -119,14 +120,18 @@ class GptOssSparseMoeBlock(nn.Module):
         self.top_k = config.num_experts_per_tok
         experts_type = get_moe_impl_class(quant_config)
         extra_kwargs = {}
-        if experts_type.__name__ == "FusedMoE":
+        # Check if experts_type inherits from FusedMoE (includes FlashInferFP4MoE, etc.)
+        if issubclass(experts_type, FusedMoE):
             quant_config_name = (
                 quant_config.get_name() if quant_config is not None else None
             )
             extra_kwargs = {
                 # for moe gate_up_proj and down_proj and their bias loading
                 "use_weight_loader_fused": quant_config_name
-                != "mxfp4"
+                != "mxfp4",
+                # Set routing method type for flashinfer_trtllm backend
+                # GPT-OSS uses Softmax -> TopK -> Renormalize routing
+                "routing_method_type": RoutingMethodType.RenormalizeNaive,
             }
         self.experts = experts_type(
             num_experts=config.num_local_experts
@@ -381,7 +386,7 @@ class GptOssDecoderLayer(nn.Module):
             head_dim=head_dim,
             rms_norm_eps=rms_norm_eps,
             attention_bias=attention_bias,
-            quant_config=quant_config,
+            quant_config=quant_config if quant_config is not None else ModelOptFp4Config(),
             prefix=add_prefix("self_attn", prefix),
             sliding_window_size=self.sliding_window_size,
             layer_type=config.layer_types[layer_id],

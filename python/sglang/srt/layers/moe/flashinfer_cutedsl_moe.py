@@ -34,6 +34,7 @@ def flashinfer_cutedsl_moe_masked(
     down_signals: Optional[torch.Tensor] = None,
     down_start_event: Optional[torch.cuda.Event] = None,
 ):
+    import remote_pdb; remote_pdb.set_trace(port=12345)
     """
     Perform masked Mixture-of-Experts computation with FlashInfer's CuteDSL
     kernels.

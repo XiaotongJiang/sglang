@@ -618,15 +618,32 @@ def prepare_static_weights_for_trtllm_fp4_moe(
     gemm2_scales_linear_fp4_bytes,
     hidden_size,
     intermediate_size,
+     intermediate_size,
     num_experts,
 ):
+    """Prepare quantized weights for FlashInfer TRTLLM FP4 MoE kernel.
+    
+    Note: This kernel requires dimensions to be multiples of 128.
+    Models with non-128-aligned dimensions (e.g., hidden_size=2880) should use
+    flashinfer_cutlass backend instead.
+    
+    Reference: https://github.com/vllm-project/vllm/blob/main/vllm/model_executor/layers/quantization/utils/flashinfer_fp4_moe.py
+    """
     from flashinfer import nvfp4_block_scale_interleave
     from flashinfer.fused_moe.core import (
         _maybe_get_cached_w3_w1_permute_indices,
         get_w2_permute_indices_with_cache,
     )
 
-    """Prepare quantized weights for kernel (done offline with weights)."""
+    # Check dimension alignment - TRTLLM kernel requires multiples of 128
+    if hidden_size % 128 != 0 or intermediate_size % 128 != 0:
+        raise ValueError(
+            f"flashinfer_trtllm backend requires hidden_size and intermediate_size "
+            f"to be multiples of 128, but got hidden_size={hidden_size}, "
+            f"intermediate_size={intermediate_size}. "
+            f"Use --moe-runner-backend flashinfer_cutlass instead."
+        )
+
     _cache_permute_indices: dict[torch.Size, torch.Tensor] = {}
     epilogue_tile_m = 128  # FIXME: this depends on the kernel internals
 
@@ -653,11 +670,11 @@ def prepare_static_weights_for_trtllm_fp4_moe(
     gemm1_scales_fp4_shuffled = []
     gemm2_weights_fp4_shuffled = []
     gemm2_scales_fp4_shuffled = []
+    
     for i in range(num_experts):
-        # Calculate the permute indices for the following:
+        # Calculate the permute indices for:
         # 1. Reorder rows of W1 and scales for fused gated activation
         # 2. Shuffle weights and scaling factors for transposed mma output
-        # for both w3_w1 and w2 weights and scale factors
         permute_indices = _maybe_get_cached_w3_w1_permute_indices(
             _cache_permute_indices,
             gemm1_weights_fp4[i].view(torch.uint8),
@@ -726,9 +743,13 @@ def prepare_static_weights_for_trtllm_fp4_moe(
         .view(torch.float8_e4m3fn)
         .reshape(num_experts, hidden_size, intermediate_size // 16)
     )
+    
     return (
         gemm1_weights_fp4_shuffled,
         gemm1_scales_fp4_shuffled,
         gemm2_weights_fp4_shuffled,
         gemm2_scales_fp4_shuffled,
+        hidden_size,
+        intermediate_size,
     )
+

@@ -961,6 +961,27 @@ class ModelRunner(ModelRunnerKVCacheMixin):
             f"avail mem={after_avail_memory:.2f} GB, "
             f"mem usage={self.weight_load_mem_usage:.2f} GB."
         )
+
+        # Log actual weight dtypes summary
+        dtype_summary = {}
+        for name, param in self.model.named_parameters():
+            dtype_str = str(param.dtype)
+            if dtype_str not in dtype_summary:
+                dtype_summary[dtype_str] = {"count": 0, "size_mb": 0.0, "examples": []}
+            dtype_summary[dtype_str]["count"] += 1
+            dtype_summary[dtype_str]["size_mb"] += param.numel() * param.element_size() / (1024 * 1024)
+            if len(dtype_summary[dtype_str]["examples"]) < 3:
+                # Get meaningful name: last 2-3 parts (e.g. "experts.w13_weight", "self_attn.q_proj.weight")
+                parts = name.split(".")
+                short_name = ".".join(parts[-3:]) if len(parts) >= 3 else name
+                dtype_summary[dtype_str]["examples"].append(short_name)
+        
+        logger.info("Weight dtype breakdown:")
+        for dtype_str, info in sorted(dtype_summary.items(), key=lambda x: -x[1]["size_mb"]):
+            examples = ", ".join(info["examples"])
+            logger.info(
+                f"  {dtype_str}: {info['count']} params, {info['size_mb']:.2f} MB (e.g. {examples})"
+            )
         if self.server_args.debug_tensor_dump_output_folder is not None:
             register_forward_hook_for_model(
                 self.model,

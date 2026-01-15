@@ -1263,7 +1263,7 @@ class FlashInferFP4MoE(FusedMoE):
             symm_output = torch.empty(
                 num_tokens, hidden_size, dtype=torch.bfloat16, device=hs_fp4.device
             )
-
+        
         result = trtllm_fp4_block_scale_moe(
             routing_logits=router_logits,
             routing_bias=correction_bias,

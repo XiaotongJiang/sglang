@@ -58,11 +58,19 @@ has_triton_kernels = is_triton_kernels_available()
 
 if is_flashinfer_available():
     from flashinfer import (
+        fp4_quantize,
         mxfp8_quantize,
         shuffle_matrix_a,
         shuffle_matrix_sf_a,
         trtllm_fp4_block_scale_moe,
     )
+    try:
+        from flashinfer.fused_moe import cutlass_fused_moe as flashinfer_cutlass_fused_moe
+    except ImportError:
+        flashinfer_cutlass_fused_moe = None
+else:
+    fp4_quantize = None
+    flashinfer_cutlass_fused_moe = None
 
 logger = logging.getLogger(__name__)
 
@@ -217,14 +225,8 @@ class Mxfp4Config(QuantizationConfig):
         from sglang.srt.layers.quantization.unquant import UnquantizedLinearMethod
 
         if isinstance(layer, LinearBase):
-            if self.ignored_layers and is_layer_skipped(
-                prefix=prefix,
-                ignored_layers=self.ignored_layers,
-                fused_mapping=self.packed_modules_mapping,
-            ):
-                return UnquantizedLinearMethod()
-            elif _is_hip:
-                return UnquantizedLinearMethod()
+            # MXFP4 only quantizes MoE layers; linear layers stay unquantized
+            return UnquantizedLinearMethod()
         elif isinstance(layer, FusedMoE):
             if self.is_checkpoint_mxfp4_serialized:
                 return Mxfp4MoEMethod(prefix=prefix)
@@ -252,6 +254,7 @@ class Mxfp4MoEMethod(FusedMoEMethodBase):
         self.use_triton_kernels = get_moe_runner_backend().is_triton_kernels()
         self.with_bias = False
         self.use_flashinfer = get_moe_runner_backend().is_flashinfer_mxfp4()
+        self.use_flashinfer_cutlass = get_moe_runner_backend().is_flashinfer_cutlass()
         self.flashinfer_mxfp4_moe_precision = (
             get_global_server_args().flashinfer_mxfp4_moe_precision
         )
@@ -575,6 +578,10 @@ class Mxfp4MoEMethod(FusedMoEMethodBase):
         self, layer: torch.nn.Module, moe_runner_config: MoeRunnerConfig
     ):
         self.moe_runner_config = moe_runner_config
+        # flashinfer_cutlass doesn't use MoeRunner
+        if self.use_flashinfer_cutlass:
+            self.runner = None
+            return
         backend = (
             MoeRunnerBackend.TRITON_KERNELS
             if self.use_triton_kernels
@@ -612,13 +619,48 @@ class Mxfp4MoEMethod(FusedMoEMethodBase):
                         mode="constant",
                         value=0.0,
                     )
+            elif self.flashinfer_mxfp4_moe_precision == "fp4":
+                # W4A4 mode: Quantize activations to NVFP4
+                assert fp4_quantize is not None, "fp4_quantize requires FlashInfer"
+                
+                # Pad hidden states if needed
+                origin_hidden_states_dim = x.shape[-1]
+                if self.hidden_size != origin_hidden_states_dim:
+                    x = torch.nn.functional.pad(
+                        x,
+                        (0, self.hidden_size - origin_hidden_states_dim),
+                        mode="constant",
+                        value=0.0,
+                    )
+                
+                # Compute global scale for NVFP4 quantization
+                # FP4_MAX = 6.0, FP8_MAX = 448.0; global_scale = (448 * 6) / max(abs(x))
+                x_abs_max = x.float().abs().max()
+                global_scale = (448.0 * 6.0) / torch.clamp(x_abs_max, min=1e-12)
+                
+                # Quantize to NVFP4: sf_vec_size=16, no swizzling for trtllm kernel
+                x_fp4_bytes, x_sf_bytes = fp4_quantize(
+                    x,
+                    global_scale,  # global_scale for NVFP4 format
+                    16,    # sf_vec_size for NVFP4
+                    False, # use_ue8m0 = False for NVFP4
+                    False, # is_sf_swizzled_layout - trtllm expects non-swizzled
+                )
+                # Reshape to expected format: [seq_len, hidden_size // 2]
+                x_quant = x_fp4_bytes.reshape(x.shape[0], x.shape[1] // 2)
+                # Scale shape: [seq_len, hidden_size // 16] as float8
+                x_scale = x_sf_bytes.view(torch.float8_e4m3fn).reshape(
+                    x.shape[0], x.shape[1] // 16
+                )
             elif self.flashinfer_mxfp4_moe_precision == "default":
                 x_quant, x_scale = mxfp8_quantize(x, False, alignment=self.hidden_size)
                 x_scale = x_scale.view(torch.float8_e4m3fn).reshape(*x.shape[:-1], -1)
             else:
-                raise NotImplementedError()
+                raise NotImplementedError(f"Unknown precision: {self.flashinfer_mxfp4_moe_precision}")
 
-            assert x_quant.shape[-1] == self.hidden_size
+            # For FP4/uint8 packed format, each byte holds 2 values, so shape is hidden_size // 2
+            expected_hidden_dim = self.hidden_size // 2 if x_quant.dtype == torch.uint8 else self.hidden_size
+            assert x_quant.shape[-1] == expected_hidden_dim
             assert TopKOutputChecker.format_is_bypassed(topk_output)
 
             top_k = topk_output.topk_config.top_k
@@ -668,6 +710,23 @@ class Mxfp4MoEMethod(FusedMoEMethodBase):
                 output=symm_output,
             )[0]
             return StandardCombineInput(hidden_states=trtllm_gen_output)
+        if self.use_flashinfer_cutlass:
+            # Weights have been dequantized to BF16, use cutlass_fused_moe
+            output = flashinfer_cutlass_fused_moe(
+                input=x,
+                token_selected_experts=topk_output.topk_ids,
+                token_final_scales=topk_output.topk_weights,
+                fc1_expert_weights=layer.w13_weight,
+                fc2_expert_weights=layer.w2_weight,
+                output_dtype=x.dtype,
+                quant_scales=None,
+                ep_size=layer.moe_ep_size,
+                ep_rank=layer.moe_ep_rank,
+                tp_size=layer.moe_tp_size,
+                tp_rank=layer.moe_tp_rank,
+                tune_max_num_tokens=next_power_of_2(x.shape[0]),
+            )[0]
+            return StandardCombineInput(hidden_states=output)
 
         backend = self.runner.runner_backend
         if backend.is_triton_kernels():
